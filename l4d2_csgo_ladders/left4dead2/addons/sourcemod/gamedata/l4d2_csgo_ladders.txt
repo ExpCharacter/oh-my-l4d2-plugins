@@ -1,0 +1,74 @@
+"Games"
+{
+	"left4dead2"
+	{
+		/**
+		 * Native ladder-move function, verified offline against both platform binaries.
+		 *
+		 * windows: bin/server.dll
+		 *   SHA-256 a93ec916a8f26fbea85688c321d2ba8dd346d435fab09a0b926dd950c2e1ea12
+		 *   head signature unique match, RVA 0xfb970 (preferred ImageBase 0x10000000)
+		 *   thiscall, no stack arguments, returns bool (every `ret` is a plain C3)
+		 *   member of the CGameMovement vtable at RVA 0x60d8ec, slot 41
+		 *   (CTerrorGameMovement's own vtable RVA 0x68d66c overrides the same slot
+		 *    with a wrapper at 0x2d36a0 that can call this base implementation)
+		 *   The 4 wildcard bytes cover a relocated stack-cookie immediate, so the
+		 *   pattern stays valid if the loader applies an ASLR relocation.
+		 *
+		 * linux: bin/server_srv.so
+		 *   SHA-256 c59ebc75b3cfcb3b6b057aea3bb04131b90258b13dc0ce8968e7deff599c9270
+		 *   (ELF 32-bit LSB i386, BuildID 63d548cd906cf59fea09cf23d729b56d92467d0e;
+		 *    the server package carrying it ships the same Windows dll)
+		 *   symbol CGameMovement::LadderMove, vaddr 0x4467e0, size 64
+		 *   unique match at the symbol entry. The entry checks the player move type,
+		 *   queries one CGameMovement virtual and tail-jumps into its GCC-split body
+		 *   (CGameMovement::LadderMove.part.66 @ 0x4457f0, which returns to the original
+		 *   caller), so a post hook on the entry still sees the finished frame.
+		 *   member of the _ZTV13CGameMovement vtable, index 44 (= +0xb0)
+		 *   runtime chain: CTerrorGameMovement::LadderMove -> CCSGameMovement::LadderMove
+		 *   -> this function
+		 *   the plugin's field offsets were re-measured on this binary and match the
+		 *   Windows layout: CGameMovement::Friction reads/writes m_vecVelocity at
+		 *   mv+0x40/0x44/0x48, and the ladder body reads the move inputs at mv+0x2c/0x30
+		 *   with the basis vectors at this+0x18/+0x24
+		 *
+		 * The exact SDK name is NOT proven for the windows binary; "LadderMove" is this
+		 * task's label there. The linux symbol table carries that exact name.
+		 */
+		"Functions"
+		{
+			"CGameMovement::LadderMove"
+			{
+				"signature"		"CGameMovement::LadderMove"
+				"callconv"		"thiscall"
+				"return"		"bool"
+				"this"			"address"
+			}
+		}
+
+		"Addresses"
+		{
+			"CGameMovement::LadderMove"
+			{
+				"windows"
+				{
+					"signature"		"CGameMovement::LadderMove"
+				}
+				"linux"
+				{
+					"signature"		"CGameMovement::LadderMove"
+				}
+			}
+		}
+
+		"Signatures"
+		{
+			"CGameMovement::LadderMove"
+			{
+				"library"		"server"
+				"windows"		"\x55\x8B\xEC\x81\xEC\xC0\x00\x00\x00\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\x56\x8B\xF1\x8B\x46\x04"
+				"linux"			"\x55\x89\xE5\x53\x83\xEC\x14\x8B\x5D\x08\x8B\x43\x04\x80\xB8\x86\x01\x00\x00\x08\x74\x22\x8B\x03\x89\x1C\x24\xFF\x90\x10\x01\x00\x00\x84\xC0\x74\x13\x83\xC4\x14\x89\xD8\x5B\x5D\xE9\xDF\xEF\xFF\xFF"
+			}
+		}
+	}
+}
