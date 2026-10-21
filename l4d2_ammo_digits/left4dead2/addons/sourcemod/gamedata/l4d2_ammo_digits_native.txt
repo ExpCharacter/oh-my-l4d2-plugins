@@ -74,9 +74,91 @@
 					"signature"	"WriteBits"
 				}
 			}
+			"ServerClassesAddr"
+			{
+				"linux"
+				{
+					"signature"	"ServerClasses"
+				}
+			}
+			"EngineCreateBaselineAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineCreateBaseline"
+				}
+			}
+			"EngineWriteSendTablesAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineWriteSendTables"
+				}
+			}
+			"EngineAdmissionAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineAdmission"
+				}
+			}
+			"EngineAllocAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineAlloc"
+				}
+			}
+			"EngineMessageAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineMessage"
+				}
+			}
+			"EngineWriteBitsAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineWriteBits"
+				}
+			}
+			"EngineCrcGlobalAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineCrcGlobal"
+				}
+			}
+			"EngineServerObjectAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineServerObject"
+				}
+			}
+			"EngineSignonDataAddr"
+			{
+				"linux"
+				{
+					"signature"	"EngineSignonData"
+				}
+			}
 		}
 		"Signatures"
 		{
+            "EngineModuleAnchor"
+            {
+                "library" "engine"
+                "windows" "@CreateInterface"
+                "linux" "@CreateInterface"
+            }
+            "ServerModuleAnchor"
+            {
+                "library" "server"
+                "windows" "@CreateInterface"
+                "linux" "@CreateInterface"
+            }
 			"WriteMessage"
 			{
 				"library"	"engine"
@@ -123,6 +205,56 @@
 			{
 				"library"	"engine"
 				"windows"	"\x55\x8B\xEC\x83\xEC\x2A\x56\x8D\x45\x2A\x57\x50\xE8\x2A\x2A\x2A"
+			}
+			"ServerClasses"
+			{
+				"library"	"server"
+				"linux"		"@_ZN14CServerGameDLL19GetAllServerClassesEv"
+			}
+			"EngineCreateBaseline"
+			{
+				"library"	"engine"
+				"linux"		"@_Z17SV_CreateBaselinev"
+			}
+			"EngineWriteSendTables"
+			{
+				"library"	"engine"
+				"linux"		"@_Z18SV_WriteSendTablesP11ServerClassR8bf_write"
+			}
+			"EngineAdmission"
+			{
+				"library"	"engine"
+				"linux"		"@_ZN11CBaseClient14SendServerInfoEv"
+			}
+			"EngineAlloc"
+			{
+				"library"	"engine"
+				"linux"		"@_ZL15default_bzallocPvii"
+			}
+			"EngineMessage"
+			{
+				"library"	"engine"
+				"linux"		"@_ZN13SVC_SendTable13WriteToBufferER8bf_write"
+			}
+			"EngineWriteBits"
+			{
+				"library"	"engine"
+				"linux"		"@_ZN8bf_write9WriteBitsEPKvi"
+			}
+			"EngineCrcGlobal"
+			{
+				"library"	"engine"
+				"linux"		"@g_SendTableCRC"
+			}
+			"EngineServerObject"
+			{
+				"library"	"engine"
+				"linux"		"@sv"
+			}
+			"EngineSignonData"
+			{
+				"library"	"engine"
+				"linux"		"@_ZN11CGameClient14SendSignonDataEv"
 			}
 		}
 	}

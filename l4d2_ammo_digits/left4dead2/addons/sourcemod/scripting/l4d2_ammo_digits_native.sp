@@ -24,14 +24,13 @@
 #include <sdktools>
 #include <dhooks>
 
-#define PLUGIN_VERSION "3.2.0"
+#define PLUGIN_VERSION "3.3.0-crossbuild-rc6-minimal"
 #define SCRATCH_BYTES 8192
 #define LINUX_SCRATCH_BYTES 16384
 #define WIRE_MAX_BITS 65535
 #define LINUX_TEMP_BIT 65536
 
 // Windows anchors (verified build 2.2.4.3 / 10097).
-#define WIN_SERVERPARENT_DELTA 0x7FF124
 #define WIN_SENDTABLES_DELTA 0x1191F0
 #define WIN_CRC_DELTA 0x694D04
 #define WIN_CACHE_DATA_DELTA 0x64579C
@@ -40,20 +39,8 @@
 #define WIN_MESSAGE_LENGTH_OFFSET 140
 #define WIN_MESSAGE_DATA_OFFSET 128
 
-// Linux anchors (engine_srv.so BuildID b1524391..., server_srv.so BuildID c9b0cd3d...).
-#define LINUX_SENDPROPINT 0x57FD90
-#define LINUX_SERVERPARENT_DELTA 0xFDF2DC
-#define LINUX_WRITEINFOS 0x145C70
-#define LINUX_SENDTABLECRC_FUNC 0x146520
-#define LINUX_CRC_DELTA 0x38F6D8
-#define LINUX_CACHE_DATA_DELTA 0x3A81B4
-#define LINUX_CACHE_BITS_DELTA 0x3A81A8
-#define LINUX_CACHE_OVERFLOW_DELTA 0x3A81AC
-#define LINUX_WRITEMESSAGE_DELTA 0x988F0
-#define LINUX_WRITEBITS_DELTA 0x2313C0
-#define LINUX_ALLOC_DELTA 0x27E100
-#define LINUX_MESSAGE_LENGTH_OFFSET 0x84
-#define LINUX_MESSAGE_DATA_OFFSET 0x78
+// Linux addresses are resolved at load time from the actual engine/server
+// gamedata symbols; no compile-time Linux RVA is used for execution.
 
 GameData g_Conf;
 Handle g_Alloc, g_Free, g_CalculateCRC, g_WriteInfos;
@@ -65,6 +52,11 @@ int g_Cut, g_SavedLength, g_SplitCount;
 bool g_Patched, g_PreHook, g_PostHook;
 bool g_MessagePreHook, g_MessagePostHook;
 bool g_IsLinux;
+int g_PatchApplied;
+int g_OriginalBits[32];
+bool g_Late;
+
+#include "include/ammo_guard.inc"
 
 public Plugin myinfo =
 {
@@ -77,19 +69,11 @@ public Plugin myinfo =
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int maxlength)
 {
-    if (late)
-    {
-        // Linux confogl reloads plugins per mode (unload_all + shared_plugins.cfg).
-        // A late load is safe only when the startup instance already widened the tables.
-        GameData conf = new GameData("l4d2_ammo_digits_native");
-        bool linux = (conf != null && conf.GetOffset("Linux32") == 1);
-        if (conf != null) delete conf;
-        if (!linux)
-        {
-            strcopy(error, maxlength, "Startup only: network tables cannot be changed by hot loading.");
-            return APLRes_SilentFailure;
-        }
-    }
+    g_Late = late;
+    // Confogl reloads plugins per mode (unload_all + shared_plugins.cfg) on both
+    // platforms.  A late load is safe only when the cache was already built with
+    // the widened schema; the signon guard verifies that cache and faults
+    // otherwise, so no startup-only rejection is needed here.
     return APLRes_Success;
 }
 
@@ -105,27 +89,17 @@ Handle StaticCallAddr(Address address, bool argument, bool result)
     return call;
 }
 
-Handle StaticCall(const char[] name, bool argument, bool result)
-{
-    Address address = g_Conf.GetAddress(name);
-    if (address == Address_Null) SetFailState("Missing address: %s", name);
-    return StaticCallAddr(address, argument, result);
-}
-
 void ReadString(Address address, char[] value, int maxlength)
 {
-    if (address == Address_Null) SetFailState("Null string pointer");
-    for (int i = 0; i < maxlength - 1; i++)
-    {
-        value[i] = view_as<char>(LoadFromAddress(address + view_as<Address>(i), NumberType_Int8));
-        if (!value[i]) return;
-    }
-    value[maxlength - 1] = '\0';
+    if (TryReadString(address, value, maxlength)) return;
+    if (!g_Patched) SetFailState("Unreadable or unterminated schema string");
+    LatchFault("Unreadable or unterminated schema string");
 }
 
 public void OnPluginStart()
 {
     if (GetEngineVersion() != Engine_Left4Dead2) SetFailState("L4D2 only");
+    g_PluginId = view_as<int>(GetMyHandle());
     g_Conf = new GameData("l4d2_ammo_digits_native");
     if (g_Conf == null) SetFailState("Missing gamedata");
     g_IsLinux = (g_Conf.GetOffset("Linux32") == 1);
@@ -134,62 +108,48 @@ public void OnPluginStart()
     Address ctor = g_Conf.GetAddress("SendPropIntCtorAddr");
     Address writeInfos = g_Conf.GetAddress("WriteInfos");
     if (ctor == Address_Null || writeInfos == Address_Null) SetFailState("Required signatures missing");
-    Address parent;
-    if (g_IsLinux)
-    {
-        Address serverBase = ctor - view_as<Address>(LINUX_SENDPROPINT);
-        g_EngineBase = writeInfos - view_as<Address>(LINUX_WRITEINFOS);
-        parent = serverBase + view_as<Address>(LINUX_SERVERPARENT_DELTA);
-    }
-    else
-    {
-        Address sendTables = g_Conf.GetAddress("EngineSendTablesAddr");
-        if (sendTables == Address_Null) SetFailState("Required engine signatures missing");
-        Address serverBase = ctor - view_as<Address>(0xA7B10);
-        g_EngineBase = sendTables - view_as<Address>(WIN_SENDTABLES_DELTA);
-        parent = serverBase + view_as<Address>(WIN_SERVERPARENT_DELTA);
-    }
-    if (LoadFromAddress(parent + view_as<Address>(8), NumberType_Int32) != 6) SetFailState("Ammo parent is not a datatable");
-    Address table = view_as<Address>(LoadFromAddress(parent + view_as<Address>(0x48), NumberType_Int32));
-    if (table == Address_Null || LoadFromAddress(table + view_as<Address>(4), NumberType_Int32) != 32)
-        SetFailState("Unexpected ammo datatable");
-    char name[64], expected[8];
-    ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), name, sizeof(name));
-    if (!StrEqual(name, "m_iAmmo")) SetFailState("Unexpected table: %s", name);
-    g_AmmoProps = view_as<Address>(LoadFromAddress(table, NumberType_Int32));
-    if (g_AmmoProps == Address_Null) SetFailState("Missing ammo properties");
-    for (int i = 0; i < 32; i++)
-    {
-        Address prop = g_AmmoProps + view_as<Address>(i * 0x54);
-        ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(0x30), NumberType_Int32)), name, sizeof(name));
-        FormatEx(expected, sizeof(expected), "%03d", i);
-        int bits = LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32);
-        if (!StrEqual(name, expected) || LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32) != 0
-            || (bits != 10 && bits != 16))
-            SetFailState("Unexpected ammo element %d", i);
-    }
+    VerifyBuild(ctor, writeInfos);
+    g_SendTables = FindConVar("sv_sendtables");
+    if (g_SendTables == null) SetFailState("Missing sv_sendtables; no protocol changes made");
     if (g_IsLinux)
     {
         // default_bzalloc(opaque, items, size) tail-calls malloc; the block lives for the process.
         StartPrepSDKCall(SDKCall_Static);
-        PrepSDKCall_SetAddress(g_EngineBase + view_as<Address>(LINUX_ALLOC_DELTA));
+        PrepSDKCall_SetAddress(g_LinuxAlloc);
         for (int i = 0; i < 3; i++) PrepSDKCall_AddParameter(SDKType_PlainOldData, SDKPass_Plain);
         PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
         g_Alloc = EndPrepSDKCall();
         if (g_Alloc == null) SetFailState("Could not prepare malloc wrapper");
         g_Scratch = view_as<Address>(SDKCall(g_Alloc, 0, LINUX_SCRATCH_BYTES, 1));
-        g_CalculateCRC = StaticCallAddr(g_EngineBase + view_as<Address>(LINUX_SENDTABLECRC_FUNC), false, true);
     }
     else
     {
-        g_Alloc = StaticCall("AllocScratch", false, true);
-        g_Free = StaticCall("FreeScratch", true, false);
-        g_CalculateCRC = StaticCall("EngineSendTableCrcAddr", false, true);
+        g_Alloc = StaticCallAddr(g_EngineBase + view_as<Address>(WINDOWS_ALLOC_RVA), false, true);
+        g_Free = StaticCallAddr(g_EngineBase + view_as<Address>(WINDOWS_FREE_RVA), true, false);
+        g_CalculateCRC = StaticCallAddr(g_EngineBase + view_as<Address>(WINDOWS_CRC_RVA), false, true);
         // Reuse the engine's own network scratch allocator; its block is 228000 bytes.
         // The wider storage is paired with framing below; storage alone is insufficient.
         g_Scratch = view_as<Address>(SDKCall(g_Alloc));
     }
     if (g_Scratch == Address_Null) SetFailState("Scratch allocation failed");
+    InitMemoryChecks();
+    if (!MemorySpan(g_Scratch, g_IsLinux ? LINUX_SCRATCH_BYTES : SCRATCH_BYTES + 64, true))
+        SetFailState("Scratch allocation is not a writable mapped range");
+    ResolveLiveSchema();
+    char name[64], expected[8];
+    if (!MemorySpan(g_AmmoProps, 32 * 84, true)) SetFailState("Ammo properties outside writable memory");
+    for (int i = 0; i < 32; i++)
+    {
+        Address prop = g_AmmoProps + view_as<Address>(i * 84);
+        ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(48), NumberType_Int32)), name, sizeof(name));
+        FormatEx(expected, sizeof(expected), "%03d", i);
+        if (!StrEqual(name, expected) || LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32) != 0
+            || (LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32) != 10
+                && LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32) != 16)
+            || !(LoadFromAddress(prop + view_as<Address>(60), NumberType_Int32) & 1))
+            SetFailState("Unexpected ammo element %d", i);
+        g_OriginalBits[i] = LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32);
+    }
     Address writer = g_Conf.GetAddress("WriteInfos");
     if (writer == Address_Null) SetFailState("Missing SendTable_WriteInfos");
     g_WriteInfos = DHookCreateDetour(writer, CallConv_CDECL, ReturnType_Bool, ThisPointer_Ignore);
@@ -200,8 +160,8 @@ public void OnPluginStart()
     g_PostHook = DHookEnableDetour(g_WriteInfos, true, AfterWriteInfos);
     if (!g_PreHook || !g_PostHook) SetFailState("Could not enable WriteInfos hooks");
     Address writeMessage = g_IsLinux
-        ? g_EngineBase + view_as<Address>(LINUX_WRITEMESSAGE_DELTA)
-        : g_Conf.GetAddress("WriteMessage");
+        ? g_LinuxMessage
+        : g_EngineBase + view_as<Address>(WINDOWS_MESSAGE_RVA);
     if (writeMessage == Address_Null) SetFailState("Missing SVC_SendTable writer");
     if (g_IsLinux)
     {
@@ -224,8 +184,8 @@ public void OnPluginStart()
     }
     if (!g_MessagePreHook || !g_MessagePostHook) SetFailState("Could not enable message framing hooks");
     Address writeBits = g_IsLinux
-        ? g_EngineBase + view_as<Address>(LINUX_WRITEBITS_DELTA)
-        : g_Conf.GetAddress("WriteBits");
+        ? g_LinuxBits
+        : g_EngineBase + view_as<Address>(WINDOWS_BITS_RVA);
     StartPrepSDKCall(SDKCall_Raw);
     PrepSDKCall_SetAddress(writeBits);
     PrepSDKCall_AddParameter(SDKType_PlainOldData, SDKPass_Plain);
@@ -236,66 +196,115 @@ public void OnPluginStart()
     if (!g_IsLinux)
     {
         StartPrepSDKCall(SDKCall_Raw);
-        PrepSDKCall_SetAddress(g_Conf.GetAddress("WriteUnsigned"));
+        PrepSDKCall_SetAddress(g_EngineBase + view_as<Address>(WINDOWS_UNSIGNED_RVA));
         for (int i = 0; i < 3; i++) PrepSDKCall_AddParameter(SDKType_PlainOldData, SDKPass_Plain);
         g_WriteUnsigned = EndPrepSDKCall();
         if (g_WriteUnsigned == null) SetFailState("Missing native unsigned writer");
     }
     g_PaddingNames = new StringMap();
+    InstallLifecycleHooks();
     for (int i = 0; i < 32; i++)
+    {
         StoreToAddress(g_AmmoProps + view_as<Address>(i * 0x54 + 12), 16, NumberType_Int32);
+        g_PatchApplied++;
+        if (LoadFromAddress(g_AmmoProps + view_as<Address>(i * 84 + 12), NumberType_Int32) != 16)
+            SetFailState("Ammo installation readback failed at element %d", i);
+    }
     g_Patched = true;
-    FindConVar("sv_sendtables").BoolValue = true;
+    g_SendTables.AddChangeHook(GuardSendTablesChanged);
+    g_SendTables.BoolValue = true;
     RegServerCmd("sm_ammodigits_status", Cmd_Status);
     RegServerCmd("sm_ammodigits_dump", Cmd_Dump);
     LogMessage("CANDIDATE: 32 ammo elements changed to 16 bits; scratch and message framing enabled (platform=%s)",
         g_IsLinux ? "linux" : "windows");
 }
 
+public void OnMapStart()
+{
+    // Map epoch and cache generation are independent: a new map may reuse a
+    // valid cache, and a real rebuild invalidates publication separately.
+    g_MapEpoch++;
+    g_ConfigsSeen = false;
+    g_PendingLogged = false;
+}
+
 public void OnConfigsExecuted()
 {
+    g_ConfigsObservations++;
+    if (!g_ConfigsSeen)
+    {
+        g_ConfigsSeen = true;
+        LogMessage("Ammo lifecycle: configs observed plugin=%d map_epoch=%d generation=%d cache_validated=%d fault=%d",
+            g_PluginId, g_MapEpoch, g_Generation, g_CacheReady ? 1 : 0, g_Faulted ? 1 : 0);
+    }
+    if (g_Faulted) return;
+    if (g_IsLinux)
+    {
+        // One publish opportunity among several; it needs no Confogl, extra cfg
+        // or a warm-up connection.  A pending cache is left for the signon path.
+        PublishMarkerOnce("configs");
+        return;
+    }
     int crc = SDKCall(g_CalculateCRC);
     // The stock CRC does not cover nested ammo fields; force full-table delivery.
-    int crcOffset = g_IsLinux ? LINUX_CRC_DELTA : WIN_CRC_DELTA;
-    StoreToAddress(g_EngineBase + view_as<Address>(crcOffset), 0x5EEDBEEF, NumberType_Int32);
-    FindConVar("sv_sendtables").BoolValue = true;
+    Address crcAddress = g_EngineBase + view_as<Address>(WIN_CRC_DELTA);
+    StoreToAddress(crcAddress, 0x5EEDBEEF, NumberType_Int32);
+    g_SendTables.BoolValue = true;
     LogMessage("Root-table CRC=%08x; full-table marker=5EEDBEEF", crc);
 }
 
 public MRESReturn BeforeWriteInfos(Handle result, Handle params)
 {
+    if (!g_CacheBuilding) return MRES_Ignored;
     Address buffer = view_as<Address>(DHookGetParam(params, 2));
-    if (buffer == Address_Null || g_Scratch == Address_Null) return MRES_Ignored;
-    // Only replace the empty 4096-byte per-table temporary writers.
-    if (LoadFromAddress(buffer + view_as<Address>(4), NumberType_Int32) == 4096
-        && LoadFromAddress(buffer + view_as<Address>(12), NumberType_Int32) == 0)
+    Address table = view_as<Address>(DHookGetParam(params, 1));
+    if (g_Faulted || g_InfosOwned || g_InfosPending || !MemorySpan(buffer, 20, true) || !MemorySpan(table, 12)
+        || LoadFromAddress(buffer + view_as<Address>(4), NumberType_Int32) != 4096
+        || LoadFromAddress(buffer + view_as<Address>(8), NumberType_Int32) != 4096 * 8
+        || LoadFromAddress(buffer + view_as<Address>(16), NumberType_Int8)
+        || LoadFromAddress(buffer + view_as<Address>(12), NumberType_Int32) != 0)
     {
-        StoreToAddress(buffer, view_as<int>(g_Scratch), NumberType_Int32);
-        StoreToAddress(buffer + view_as<Address>(4), g_IsLinux ? LINUX_SCRATCH_BYTES : SCRATCH_BYTES, NumberType_Int32);
-        StoreToAddress(buffer + view_as<Address>(8), WIRE_MAX_BITS, NumberType_Int32);
-        g_Expanded++;
+        LatchFault("Unexpected/nested cache table writer");
+        DHookSetReturn(result, false); return MRES_Supercede;
     }
+    g_InfosBuffer = buffer; g_InfosTable = table; g_InfosOwned = true; g_InfosBits = 0; g_Cut = 0;
+    StoreToAddress(buffer, view_as<int>(g_Scratch), NumberType_Int32);
+    StoreToAddress(buffer + view_as<Address>(4), g_IsLinux ? LINUX_SCRATCH_BYTES : SCRATCH_BYTES, NumberType_Int32);
+    StoreToAddress(buffer + view_as<Address>(8), WIRE_MAX_BITS, NumberType_Int32);
+    g_Expanded++;
     return MRES_Ignored;
 }
 
 public MRESReturn AfterWriteInfos(Handle result, Handle params)
 {
+    if (!g_CacheBuilding || !g_InfosOwned) return MRES_Ignored;
     Address buffer = view_as<Address>(DHookGetParam(params, 2));
-    if (buffer == Address_Null) return MRES_Ignored;
+    Address table = view_as<Address>(DHookGetParam(params, 1));
+    if (buffer != g_InfosBuffer || table != g_InfosTable)
+    { LatchFault("WriteInfos pre/post ownership mismatch"); return MRES_Ignored; }
+    g_InfosOwned = false;
     int bits = LoadFromAddress(buffer + view_as<Address>(12), NumberType_Int32);
     g_Cut = 0;
     g_TableCount++;
     if (bits > g_MaxBits) g_MaxBits = bits;
-    if (!DHookGetReturn(result) || LoadFromAddress(buffer + view_as<Address>(16), NumberType_Int8) || bits > WIRE_MAX_BITS)
+    if (g_Faulted || !DHookGetReturn(result) || LoadFromAddress(buffer + view_as<Address>(16), NumberType_Int8)
+        || bits <= 0 || bits > WIRE_MAX_BITS
+        || view_as<Address>(LoadFromAddress(buffer, NumberType_Int32)) != g_Scratch)
     {
-        g_Failures++;
-        LogError("Table serialization failed: bits=%d", bits);
+        LatchFault("Table serialization failed or scratch ownership changed");
+        DHookSetReturn(result, false); return MRES_Override;
     }
-    else if (bits > 32767)
+    g_InfosBits = bits;
+    g_InfosPending = true;
+    char tableName[128];
+    ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), tableName, sizeof(tableName));
+    int used;
+    if (g_UsedPadding.GetValue(tableName, used)) LatchFault("Real table collides with a framing padding name");
+    g_RealTableNames.SetValue(tableName, 1);
+    if (bits > 32767)
     {
-        Address table = view_as<Address>(DHookGetParam(params, 1));
         g_Cut = FindCut(table, bits);
-        if (!g_Cut) { g_Failures++; LogError("No safe integer bounds available for framing"); }
+        if (!g_Cut) LatchFault("No safe integer bounds available for framing");
         else
         {
             char name[128]; ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), name, sizeof(name));
@@ -303,19 +312,30 @@ public MRESReturn AfterWriteInfos(Handle result, Handle params)
             if (!g_PaddingNames.GetValue(name, tag))
             {
                 tag = 33 + g_PaddingNames.Size;
-                if (tag > 126) SetFailState("Too many framing tables");
-                g_PaddingNames.SetValue(name, tag);
+                if (tag > 126) LatchFault("Padding name capacity exceeded");
+                else g_PaddingNames.SetValue(name, tag);
             }
-            int cursor = g_Cut;
-            SetBits(cursor, 9, 6); SetBits(cursor, 0, 1); SetBits(cursor, bits - g_Cut - 23, 16);
-            SetBits(cursor, tag, 8); SetBits(cursor, 0, 8); SetBits(cursor, 0, 10);
+            char padding[2]; padding[0] = view_as<char>(tag); padding[1] = '\0';
+            if (g_RealTableNames.GetValue(padding, used)) LatchFault("Framing padding collides with a real table");
+            g_UsedPadding.SetValue(padding, 1);
+            if (!g_Faulted)
+            {
+                int cursor = g_Cut;
+                SetBits(cursor, 9, 6); SetBits(cursor, 0, 1); SetBits(cursor, bits - g_Cut - 23, 16);
+                SetBits(cursor, tag, 8); SetBits(cursor, 0, 8); SetBits(cursor, 0, 10);
+            }
         }
     }
+    if (g_Faulted) { DHookSetReturn(result, false); return MRES_Override; }
     return MRES_Ignored;
 }
 
 void SetBits(int &position, int value, int count)
 {
+    int capacity = g_IsLinux ? LINUX_SCRATCH_BYTES * 8 : SCRATCH_BYTES * 8;
+    if (g_Faulted) return;
+    if (position < 0 || count < 0 || count > 32 || position > capacity || count > capacity - position)
+    { LatchFault("Scratch bit-write outside capacity"); return; }
     for (int i = 0; i < count; i++)
     {
         Address address = g_Scratch + view_as<Address>(position / 8);
@@ -328,17 +348,22 @@ void SetBits(int &position, int value, int count)
 
 int FindCut(Address table, int length)
 {
+    if (!MemorySpan(table, 12)) return 0;
     char name[256]; ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), name, sizeof(name));
+    if (g_Faulted) return 0;
     int position = (strlen(name) + 1) * 8 + 10, best, bestDistance = 0x7FFFFFFF;
     Address properties = view_as<Address>(LoadFromAddress(table, NumberType_Int32));
     int count = LoadFromAddress(table + view_as<Address>(4), NumberType_Int32);
+    if (count < 0 || count > 4096 || (count && !MemorySpan(properties, count * 84))) return 0;
     for (int i = 0; i < count; i++)
     {
         Address prop = properties + view_as<Address>(i * 84);
         int type = LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32);
         int flags = LoadFromAddress(prop + view_as<Address>(60), NumberType_Int32);
+        if (type < 0 || type > 6) return 0;
         ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(48), NumberType_Int32)), name, sizeof(name));
         position += 5 + (strlen(name) + 1) * 8 + 19 + 8;
+        if (g_Faulted || position > length) return 0;
         if (type == 0 && !(flags & 0x40) && position <= 32767 && length - position - 23 > 0 && length - position - 23 <= 32767)
         {
             int distance = position * 2 - length;
@@ -351,6 +376,7 @@ int FindCut(Address table, int length)
             if (type == 6)
             {
                 Address child = view_as<Address>(LoadFromAddress(prop + view_as<Address>(72), NumberType_Int32));
+                if (!MemorySpan(child, 12)) return 0;
                 text = view_as<Address>(LoadFromAddress(child + view_as<Address>(8), NumberType_Int32));
             }
             else text = view_as<Address>(LoadFromAddress(prop + view_as<Address>(40), NumberType_Int32));
@@ -358,29 +384,44 @@ int FindCut(Address table, int length)
         }
         else position += type == 5 ? 10 : 70;
     }
-    return position == length ? best : 0;
+    return !g_Faulted && position == length ? best : 0;
 }
 
 public MRESReturn BeforeWriteMessage(Address message, Handle result, Handle params)
 {
-    return MessageBefore(message);
+    return MessageBefore(message, view_as<Address>(DHookGetParam(params, 1)), result);
 }
 
 public MRESReturn LinuxBeforeWriteMessage(Handle result, Handle params)
 {
-    return MessageBefore(view_as<Address>(DHookGetParam(params, 1)));
+    return MessageBefore(view_as<Address>(DHookGetParam(params, 1)), view_as<Address>(DHookGetParam(params, 2)), result);
 }
 
-MRESReturn MessageBefore(Address message)
+MRESReturn MessageBefore(Address message, Address output, Handle result)
 {
-    g_SavedLength = 0;
+    if (!g_CacheBuilding) return MRES_Ignored;
     int lengthOffset = g_IsLinux ? LINUX_MESSAGE_LENGTH_OFFSET : WIN_MESSAGE_LENGTH_OFFSET;
     int dataOffset = g_IsLinux ? LINUX_MESSAGE_DATA_OFFSET : WIN_MESSAGE_DATA_OFFSET;
+    if (g_Faulted || g_Message != Address_Null || !MemorySpan(message, lengthOffset + 4, true) || !MemorySpan(output, 20, true))
+    { LatchFault("Invalid/nested SendTable message context"); DHookSetReturn(result, false); return MRES_Supercede; }
     int bits = LoadFromAddress(message + view_as<Address>(lengthOffset), NumberType_Int32);
+    int cursor = LoadFromAddress(output + view_as<Address>(12), NumberType_Int32);
+    int capacity = LoadFromAddress(output + view_as<Address>(8), NumberType_Int32);
+    int bytes = LoadFromAddress(output + view_as<Address>(4), NumberType_Int32);
+    Address outputData = view_as<Address>(LoadFromAddress(output, NumberType_Int32));
+    Address data = view_as<Address>(LoadFromAddress(message + view_as<Address>(dataOffset), NumberType_Int32));
+    if (bits < 0 || bits > WIRE_MAX_BITS || (bits && (!g_InfosPending || bits != g_InfosBits || data != g_Scratch))
+        || bytes <= 0 || bytes > 228000 || capacity <= 0 || capacity > bytes * 8
+        || !MemorySpan(outputData, bytes, true)
+        || cursor < 0 || capacity < cursor || bits + 23 > capacity - cursor
+        || LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+    { LatchFault("SendTable payload/output does not match validated serialization"); DHookSetReturn(result, false); return MRES_Supercede; }
+    g_Message = message; g_MessageOutput = output; g_MessageBits = bits; g_MessageStart = cursor;
+    if (bits) g_InfosPending = false;
     if (bits <= 32767) return MRES_Ignored;
-    if (!g_Cut || view_as<Address>(LoadFromAddress(message + view_as<Address>(dataOffset), NumberType_Int32)) != g_Scratch)
+    if (g_Cut <= 0 || g_Cut > 32767 || bits - g_Cut - 23 <= 0 || bits - g_Cut - 23 > 32767)
     {
-        g_Failures++; LogError("Unframed overlong SendTable"); return MRES_Ignored;
+        LatchFault("Unframed overlong SendTable"); DHookSetReturn(result, false); return MRES_Supercede;
     }
     g_SavedLength = bits;
     StoreToAddress(message + view_as<Address>(lengthOffset), g_Cut, NumberType_Int32);
@@ -400,10 +441,20 @@ public MRESReturn LinuxAfterWriteMessage(Handle result, Handle params)
 
 MRESReturn MessageAfter(Address message, Address output, Handle result)
 {
-    if (!g_SavedLength) return MRES_Ignored;
-    int bits = g_SavedLength; g_SavedLength = 0;
+    if (message != g_Message || g_Message == Address_Null) return MRES_Ignored;
+    int bits = g_MessageBits, framed = g_SavedLength;
+    g_SavedLength = 0; g_Message = Address_Null;
     int lengthOffset = g_IsLinux ? LINUX_MESSAGE_LENGTH_OFFSET : WIN_MESSAGE_LENGTH_OFFSET;
-    StoreToAddress(message + view_as<Address>(lengthOffset), bits, NumberType_Int32);
+    if (framed) StoreToAddress(message + view_as<Address>(lengthOffset), bits, NumberType_Int32);
+    if (g_Faulted || output != g_MessageOutput || !DHookGetReturn(result) || LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+    { LatchFault("Original message writer failed; no tail appended"); DHookSetReturn(result, false); return MRES_Override; }
+    if (!framed)
+    {
+        if (LoadFromAddress(output + view_as<Address>(12), NumberType_Int32) != g_MessageStart + bits + 23)
+        { LatchFault("Short message output length mismatch"); DHookSetReturn(result, false); return MRES_Override; }
+        if (bits) g_GenerationMessages++;
+        return MRES_Ignored;
+    }
     int position = g_Cut, remaining = bits - position;
     if (position % 8)
     {
@@ -414,40 +465,52 @@ MRESReturn MessageAfter(Address message, Address output, Handle result)
             // bf_write::WriteBits always reads from bit 0, so stage the shifted byte at the scratch tail.
             int temp = LINUX_TEMP_BIT;
             SetBits(temp, byte >>> (position % 8), prefix);
-            SDKCall(g_WriteBits, output, g_Scratch + view_as<Address>(LINUX_TEMP_BIT / 8), prefix);
+            if (g_Faulted || !SDKCall(g_WriteBits, output, g_Scratch + view_as<Address>(LINUX_TEMP_BIT / 8), prefix))
+            { LatchFault("Framing prefix write failed"); DHookSetReturn(result, false); return MRES_Override; }
         }
         else
         {
             SDKCall(g_WriteUnsigned, output, byte >>> (position % 8), prefix, 1);
         }
+        if (LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+        { LatchFault("Framing prefix overflow"); DHookSetReturn(result, false); return MRES_Override; }
         position += prefix; remaining -= prefix;
     }
     bool okay = SDKCall(g_WriteBits, output, g_Scratch + view_as<Address>(position / 8), remaining);
+    if (!okay || LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+    { LatchFault("Framing tail write failed"); DHookSetReturn(result, false); return MRES_Override; }
     g_SplitCount++;
-    if (!okay) { g_Failures++; DHookSetReturn(result, false); return MRES_Override; }
+    if (LoadFromAddress(output + view_as<Address>(12), NumberType_Int32) != g_MessageStart + bits + 23)
+    { LatchFault("Framed message output length mismatch"); DHookSetReturn(result, false); return MRES_Override; }
+    g_GenerationMessages++;
     return MRES_Ignored;
 }
 
 public Action Cmd_Status(int args)
 {
-    int bitsOffset = g_IsLinux ? LINUX_CACHE_BITS_DELTA : WIN_CACHE_BITS_DELTA;
-    int overflowOffset = g_IsLinux ? LINUX_CACHE_OVERFLOW_DELTA : WIN_CACHE_OVERFLOW_DELTA;
-    int crcOffset = g_IsLinux ? LINUX_CRC_DELTA : WIN_CRC_DELTA;
-    int bits = LoadFromAddress(g_EngineBase + view_as<Address>(bitsOffset), NumberType_Int32);
-    int overflow = LoadFromAddress(g_EngineBase + view_as<Address>(overflowOffset), NumberType_Int8);
-    int crc = LoadFromAddress(g_EngineBase + view_as<Address>(crcOffset), NumberType_Int32);
+    Address bitsAddress = g_IsLinux ? g_LinuxCacheBits : g_EngineBase + view_as<Address>(WIN_CACHE_BITS_DELTA);
+    Address overflowAddress = g_IsLinux ? g_LinuxCacheOverflow : g_EngineBase + view_as<Address>(WIN_CACHE_OVERFLOW_DELTA);
+    Address crcAddress = g_IsLinux ? g_LinuxCrcGlobal : g_EngineBase + view_as<Address>(WIN_CRC_DELTA);
+    int bits = LoadFromAddress(bitsAddress, NumberType_Int32);
+    int overflow = LoadFromAddress(overflowAddress, NumberType_Int8);
+    int crc = LoadFromAddress(crcAddress, NumberType_Int32);
     PrintToServer("[ammo-native-candidate] tables=%d expanded=%d split=%d maxbits=%d failures=%d cachebits=%d overflow=%d crc=%08x",
         g_TableCount, g_Expanded, g_SplitCount, g_MaxBits, g_Failures, bits, overflow, crc);
+    PrintToServer("[ammo-guard] generation=%d building=%d ready=%d fault=%d digest=%08x reason=%s", g_Generation, g_CacheBuilding, g_CacheReady, g_Faulted, g_CacheDigest, g_FaultReason);
+    if (g_IsLinux)
+        PrintToServer("[ammo-lifecycle] plugin=%d map_epoch=%d configs_seen=%d configs_observed=%d cache_validated=%d marker_published=%d published_epoch=%d published_generation=%d publish_writes=%d",
+            g_PluginId, g_MapEpoch, g_ConfigsSeen ? 1 : 0, g_ConfigsObservations, g_CacheReady ? 1 : 0,
+            g_MarkerPublished ? 1 : 0, g_PublishedEpoch, g_PublishedGeneration, g_PublishWrites);
     return Plugin_Handled;
 }
 
 public Action Cmd_Dump(int args)
 {
-    int dataOffset = g_IsLinux ? LINUX_CACHE_DATA_DELTA : WIN_CACHE_DATA_DELTA;
-    int bitsOffset = g_IsLinux ? LINUX_CACHE_BITS_DELTA : WIN_CACHE_BITS_DELTA;
-    Address data = view_as<Address>(LoadFromAddress(g_EngineBase + view_as<Address>(dataOffset), NumberType_Int32));
-    int bits = LoadFromAddress(g_EngineBase + view_as<Address>(bitsOffset), NumberType_Int32);
-    if (data == Address_Null || bits <= 0 || bits > 228000 * 8) { PrintToServer("[ammo-repair] no valid cache"); return Plugin_Handled; }
+    int bits; Address data;
+    Address bitsAddress = g_IsLinux ? g_LinuxCacheBits : g_EngineBase + view_as<Address>(WIN_CACHE_BITS_DELTA);
+    int rawBits = LoadFromAddress(bitsAddress, NumberType_Int32);
+    if (!CacheValid(bits, data) || data == Address_Null || bits != rawBits || bits <= 0 || bits > 228000 * 8)
+    { PrintToServer("[ammo-repair] no valid cache"); return Plugin_Handled; }
     char path[PLATFORM_MAX_PATH];
     BuildPath(Path_SM, path, sizeof(path), "data/ammo_digits_sendtables.bin");
     File file = OpenFile(path, "wb");
@@ -460,6 +523,8 @@ public Action Cmd_Dump(int args)
 
 public void OnPluginEnd()
 {
+    g_Closing = true;
+    RemoveLifecycleHooks();
     if (g_PreHook) DHookDisableDetour(g_WriteInfos, false, BeforeWriteInfos);
     if (g_PostHook) DHookDisableDetour(g_WriteInfos, true, AfterWriteInfos);
     if (g_IsLinux)
@@ -472,8 +537,17 @@ public void OnPluginEnd()
         if (g_MessagePreHook) DHookDisableDetour(g_WriteMessage, false, BeforeWriteMessage);
         if (g_MessagePostHook) DHookDisableDetour(g_WriteMessage, true, AfterWriteMessage);
     }
-    // Linux intentionally leaks the process-lifetime scratch block and leaves the widened
-    // tables and fixed CRC in place: both are process-level patches that only a restart clears.
+    if (!g_Patched && g_PatchApplied && g_AmmoProps != Address_Null)
+    {
+        for (int i = 0; i < g_PatchApplied; i++) StoreToAddress(g_AmmoProps + view_as<Address>(i * 84 + 12), g_OriginalBits[i], NumberType_Int32);
+    }
+    // Existing unload policy retained: lifetime ownership fixes are deferred by the user.
     if (!g_IsLinux && g_Scratch != Address_Null && g_Free != null) SDKCall(g_Free, g_Scratch);
     if (g_Patched) LogMessage("Network tables remain widened until process exit; restart without this experiment to restore stock protocol");
 }
+
+public void GuardSendTablesChanged(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+    if (g_Patched && !g_Closing && !convar.BoolValue) LatchFault("sv_sendtables disabled after installation");
+}
+
