@@ -2,39 +2,41 @@
 {
 	"left4dead2"
 	{
-		/**
-		 * Native ladder-move function, verified offline against both platform binaries.
-		 *
-		 * windows: bin/server.dll
-		 *   SHA-256 a93ec916a8f26fbea85688c321d2ba8dd346d435fab09a0b926dd950c2e1ea12
-		 *   head signature unique match, RVA 0xfb970 (preferred ImageBase 0x10000000)
-		 *   thiscall, no stack arguments, returns bool (every `ret` is a plain C3)
-		 *   member of the CGameMovement vtable at RVA 0x60d8ec, slot 41
-		 *   (CTerrorGameMovement's own vtable RVA 0x68d66c overrides the same slot
-		 *    with a wrapper at 0x2d36a0 that can call this base implementation)
-		 *   The 4 wildcard bytes cover a relocated stack-cookie immediate, so the
-		 *   pattern stays valid if the loader applies an ASLR relocation.
-		 *
-		 * linux: bin/server_srv.so
-		 *   SHA-256 c59ebc75b3cfcb3b6b057aea3bb04131b90258b13dc0ce8968e7deff599c9270
-		 *   (ELF 32-bit LSB i386, BuildID 63d548cd906cf59fea09cf23d729b56d92467d0e;
-		 *    the server package carrying it ships the same Windows dll)
-		 *   symbol CGameMovement::LadderMove, vaddr 0x4467e0, size 64
-		 *   unique match at the symbol entry. The entry checks the player move type,
-		 *   queries one CGameMovement virtual and tail-jumps into its GCC-split body
-		 *   (CGameMovement::LadderMove.part.66 @ 0x4457f0, which returns to the original
-		 *   caller), so a post hook on the entry still sees the finished frame.
-		 *   member of the _ZTV13CGameMovement vtable, index 44 (= +0xb0)
-		 *   runtime chain: CTerrorGameMovement::LadderMove -> CCSGameMovement::LadderMove
-		 *   -> this function
-		 *   the plugin's field offsets were re-measured on this binary and match the
-		 *   Windows layout: CGameMovement::Friction reads/writes m_vecVelocity at
-		 *   mv+0x40/0x44/0x48, and the ladder body reads the move inputs at mv+0x2c/0x30
-		 *   with the basis vectors at this+0x18/+0x24
-		 *
-		 * The exact SDK name is NOT proven for the windows binary; "LadderMove" is this
-		 * task's label there. The linux symbol table carries that exact name.
-		 */
+
+		"Offsets"
+		{
+			"CGameMovement.Player"
+			{
+				"windows"	"4"
+				"linux"		"4"
+			}
+			"CGameMovement.MoveData"
+			{
+				"windows"	"8"
+				"linux"		"8"
+			}
+			"CGameMovement.ViewForward"
+			{
+				"windows"	"24"
+				"linux"		"24"
+			}
+			"CGameMovement.ViewRight"
+			{
+				"windows"	"36"
+				"linux"		"36"
+			}
+			"CMoveData.Buttons"
+			{
+				"windows"	"36"
+				"linux"		"36"
+			}
+			"CMoveData.Velocity"
+			{
+				"windows"	"64"
+				"linux"		"64"
+			}
+		}
+
 		"Functions"
 		{
 			"CGameMovement::LadderMove"

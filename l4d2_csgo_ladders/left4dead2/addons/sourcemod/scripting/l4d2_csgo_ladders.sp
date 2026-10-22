@@ -16,6 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 // Written with ChatGPT 6.1 sol high + deepseek flash.
+
 #pragma semicolon 1
 #pragma newdecls required
 
@@ -23,16 +24,9 @@
 #include <sdktools>
 #include <dhooks>
 
-#define PROTOTYPE_VERSION "0.4.16"
+#define PROTOTYPE_VERSION "1.0"
 #define GAMEDATA "l4d2_csgo_ladders"
 #define DETOUR_NAME "CGameMovement::LadderMove"
-
-#define OFF_THIS_PLAYER 0x4
-#define OFF_THIS_MV 0x8
-#define OFF_THIS_BASIS_A 0x18   // input viewForward vector; NOT a ladder-plane up axis
-#define OFF_THIS_BASIS_B 0x24   // input right vector; NOT generally tangent to the ladder
-#define OFF_MV_BUTTONS 0x24
-#define OFF_MV_VELOCITY 0x40
 
 // Button masks are supplied by the installed SourceMod includes.
 
@@ -44,6 +38,12 @@ ConVar g_cvCsgoDuckSpeed;
 ConVar g_cvSurvivors;
 ConVar g_cvInfected;
 Handle g_hDetour;
+int g_PlayerOffset;
+int g_MoveDataOffset;
+int g_ViewForwardOffset;
+int g_ViewRightOffset;
+int g_ButtonsOffset;
+int g_VelocityOffset;
 int g_Applied;
 int g_LastReport;
 
@@ -58,18 +58,24 @@ public Plugin myinfo =
 
 public void OnPluginStart()
 {
-    g_cvEnabled = CreateConVar("sm_csgoladder_enabled", "0", "Master switch. 0 = plugin does nothing (native ladder movement).", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvDebug = CreateConVar("sm_csgoladder_debug", "0", "Default-off debug logging, rate limited.", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvSpeed = CreateConVar("sm_csgoladder_speed", "200.0", "Per-input ladder speed from the recorded baseline (CS:GO: 200.0).", FCVAR_NOTIFY, true, 0.0);
-    g_cvCsgoScale = CreateConVar("sm_csgoladder_csgo_scale", "0.78", "CS:GO sv_ladder_scale_speed equivalent: multiplies the mapped ladder velocity vector. 0 = no scaling (raw per-key value). L4D2 has no such ConVar.", FCVAR_NOTIFY, true, 0.0, true, 2.0);
-    g_cvCsgoDuckSpeed = CreateConVar("sm_csgoladder_csgo_duck_speed", "68.0", "CS:GO per-key ladder value while IN_DUCK or IN_SPEED is held (CS:GO: 68.0, otherwise 200.0).", FCVAR_NOTIFY, true, 0.0, true, 200.0);
-    g_cvSurvivors = CreateConVar("sm_csgoladder_survivors", "1", "Apply to survivors (team 2).", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    g_cvInfected = CreateConVar("sm_csgoladder_infected", "1", "Apply to special infected (team 3). Ghost-mode infected are always excluded.", FCVAR_NOTIFY, true, 0.0, true, 1.0);
-    RegAdminCmd("sm_csgoladder_status", Command_Status, ADMFLAG_ROOT, "Show the switches and the applied-change count");
+    g_cvEnabled = CreateConVar("l4d2_csgoladder_enabled", "0", "Master switch. 0 = plugin does nothing (native ladder movement).", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvDebug = CreateConVar("l4d2_csgoladder_debug", "0", "Default-off debug logging, rate limited.", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvSpeed = CreateConVar("l4d2_csgoladder_speed", "200.0", "Per-input ladder speed from the recorded baseline (CS:GO: 200.0).", FCVAR_NOTIFY, true, 0.0);
+    g_cvCsgoScale = CreateConVar("l4d2_csgoladder_scale", "0.78", "CS:GO sv_ladder_scale_speed equivalent: multiplies the mapped ladder velocity vector. 0 = no scaling (raw per-key value). L4D2 has no such ConVar.", FCVAR_NOTIFY, true, 0.0, true, 2.0);
+    g_cvCsgoDuckSpeed = CreateConVar("l4d2_csgoladder_duck_speed", "68.0", "CS:GO per-key ladder value while IN_DUCK or IN_SPEED is held (CS:GO: 68.0, otherwise 200.0).", FCVAR_NOTIFY, true, 0.0, true, 200.0);
+    g_cvSurvivors = CreateConVar("l4d2_csgoladder_survivors", "1", "Apply to survivors (team 2).", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    g_cvInfected = CreateConVar("l4d2_csgoladder_infected", "1", "Apply to special infected (team 3). Ghost-mode infected are always excluded.", FCVAR_NOTIFY, true, 0.0, true, 1.0);
+    RegAdminCmd("l4d2_csgoladder_status", Command_Status, ADMFLAG_ROOT, "Show the switches and the applied-change count");
 
     Handle gameData = LoadGameConfigFile(GAMEDATA);
     if (gameData == null)
         SetFailState("Gamedata \"%s\" missing; refusing to run with partial hooks.", GAMEDATA);
+    g_PlayerOffset = GameConfGetOffset(gameData, "CGameMovement.Player");
+    g_MoveDataOffset = GameConfGetOffset(gameData, "CGameMovement.MoveData");
+    g_ViewForwardOffset = GameConfGetOffset(gameData, "CGameMovement.ViewForward");
+    g_ViewRightOffset = GameConfGetOffset(gameData, "CGameMovement.ViewRight");
+    g_ButtonsOffset = GameConfGetOffset(gameData, "CMoveData.Buttons");
+    g_VelocityOffset = GameConfGetOffset(gameData, "CMoveData.Velocity");
     g_hDetour = DHookCreateFromConf(gameData, DETOUR_NAME);
     delete gameData;
     if (g_hDetour == null)
@@ -112,8 +118,8 @@ public MRESReturn OnLadderMovePost(Address pThis, Handle hReturn)
     if (DHookGetReturn(hReturn) != 1)
         return MRES_Ignored;
 
-    Address player = ReadAddress(pThis, OFF_THIS_PLAYER);
-    Address mv = ReadAddress(pThis, OFF_THIS_MV);
+    Address player = ReadAddress(pThis, g_PlayerOffset);
+    Address mv = ReadAddress(pThis, g_MoveDataOffset);
     if (player == Address_Null || mv == Address_Null)
         return MRES_Ignored;
 
@@ -144,7 +150,7 @@ public MRESReturn OnLadderMovePost(Address pThis, Handle hReturn)
     if (IsPlayerInSpecialState(client))
         return MRES_Ignored;
 
-    int buttons = ReadInt(mv, OFF_MV_BUTTONS);
+    int buttons = ReadInt(mv, g_ButtonsOffset);
     int fwd = ((buttons & IN_FORWARD) ? 1 : 0) - ((buttons & IN_BACK) ? 1 : 0);
     int side = ((buttons & IN_MOVERIGHT) ? 1 : 0) - ((buttons & IN_MOVELEFT) ? 1 : 0);
     // Keep jump handling (including a held jump) and floor push-off native.
@@ -157,8 +163,8 @@ public MRESReturn OnLadderMovePost(Address pThis, Handle hReturn)
     float viewForward[3], right[3], normal[3], mapped[3];
     for (int i = 0; i < 3; i++)
     {
-        viewForward[i] = ReadFloat(pThis, OFF_THIS_BASIS_A + i * 4);
-        right[i] = ReadFloat(pThis, OFF_THIS_BASIS_B + i * 4);
+        viewForward[i] = ReadFloat(pThis, g_ViewForwardOffset + i * 4);
+        right[i] = ReadFloat(pThis, g_ViewRightOffset + i * 4);
     }
     if (!HasEntProp(client, Prop_Send, "m_vecLadderNormal"))
         return MRES_Ignored;
@@ -181,11 +187,11 @@ public MRESReturn OnLadderMovePost(Address pThis, Handle hReturn)
     // not a movement parameter). No position or movetype writes.
     float nativeNormal = 0.0;
     for (int i = 0; i < 3; i++)
-        nativeNormal += ReadFloat(mv, OFF_MV_VELOCITY + i * 4) * normal[i];
+        nativeNormal += ReadFloat(mv, g_VelocityOffset + i * 4) * normal[i];
     if (!IsFiniteFloat(nativeNormal) || FloatAbs(nativeNormal) > 0.01)
         return MRES_Ignored;
     for (int i = 0; i < 3; i++)
-        WriteFloat(mv, OFF_MV_VELOCITY + i * 4, mapped[i]);
+        WriteFloat(mv, g_VelocityOffset + i * 4, mapped[i]);
     g_Applied++;
     if (g_cvDebug.BoolValue && GetGameTickCount() - g_LastReport >= 50)
     {

@@ -1,9 +1,3 @@
-/**
- * l4d2_tactical_reload —— 弹匣未打空时换弹，装填完成后每把枪 +1。
- * 战术换弹期间临时抬高武器类脚本弹容，引擎自己装到 满弹匣+1，结束立即还原。
- * 起手：SDKHook_Reload；结束：0.05 秒轮询；显示/回填：weapon_reload、weapon_fire。
- * 武器清单与参数全部来自 data/l4d2_tactical_reload_weapons.cfg（随插件分发）。
- */
 #pragma semicolon 1
 #pragma newdecls required
 #include <sourcemod>
@@ -33,7 +27,6 @@ enum struct WeaponCfg
 	int shellFed;
 }
 
-// 类级脚本弹容状态；与配置分表，配置重载不丢引用计数。
 enum struct AttrState
 {
 	int baseClip;
@@ -42,7 +35,6 @@ enum struct AttrState
 	int users;
 }
 
-// 一次换弹会话，OnReloadPre 一次写满。
 enum struct Session
 {
 	int ref;
@@ -78,7 +70,7 @@ bool g_pollLive, g_late;
 
 public Plugin myinfo =
 {
-	name = "L4D2 Tactical Reload", author = "ZCode",
+	name = "L4D2 Tactical Reload", author = "ExpCharacter",
 	description = "战术换弹：弹匣未打空时换弹，装填完成后每把枪 +1", version = PLUGIN_VERSION, url = ""
 };
 
@@ -123,15 +115,49 @@ void Dbg(const char[] fmt, any...)
 	char buffer[512]; VFormat(buffer, sizeof buffer, fmt, 2); LogMessage("%s", buffer);
 }
 
-// ---------------------------------------------------------------------------
-// 武器配置
-// ---------------------------------------------------------------------------
-
 void CfgPath(char[] path, int maxlen) { BuildPath(Path_SM, path, maxlen, "data/%s", CFG_FILE); }
+
+void AddDefaultWeapon(KeyValues kv, const char[] name, int enabled, int bonus, float reloadTime)
+{
+	kv.JumpToKey(name, true);
+	kv.SetNum("enabled", enabled); kv.SetNum("bonus", bonus);
+	kv.SetFloat("reload_time", reloadTime);
+	kv.GoBack();
+}
+
+bool CreateDefaultConfig(const char[] path)
+{
+	KeyValues kv = new KeyValues("Weapons");
+	AddDefaultWeapon(kv, "weapon_pistol", 1, 1, 1.2);
+	AddDefaultWeapon(kv, "weapon_pistol_dual", 1, 1, 1.75);
+	AddDefaultWeapon(kv, "weapon_pistol_magnum", 1, 1, 1.18);
+	AddDefaultWeapon(kv, "weapon_smg_mp5", 1, 1, 1.7);
+	AddDefaultWeapon(kv, "weapon_smg", 1, 0, 1.04);
+	AddDefaultWeapon(kv, "weapon_smg_silenced", 1, 0, 1.05);
+	AddDefaultWeapon(kv, "weapon_rifle", 1, 1, 1.2);
+	AddDefaultWeapon(kv, "weapon_rifle_ak47", 1, 1, 1.2);
+	AddDefaultWeapon(kv, "weapon_rifle_desert", 1, 1, 1.8);
+	AddDefaultWeapon(kv, "weapon_rifle_sg552", 1, 1, 1.6);
+	AddDefaultWeapon(kv, "weapon_hunting_rifle", 1, 1, 2.6);
+	AddDefaultWeapon(kv, "weapon_sniper_military", 1, 1, 1.8);
+	AddDefaultWeapon(kv, "weapon_sniper_awp", 1, 1, 2.0);
+	AddDefaultWeapon(kv, "weapon_sniper_scout", 1, 1, 1.45);
+	AddDefaultWeapon(kv, "weapon_pumpshotgun", 1, 1, 0.0);
+	AddDefaultWeapon(kv, "weapon_shotgun_chrome", 1, 1, 0.0);
+	AddDefaultWeapon(kv, "weapon_shotgun_spas", 1, 1, 0.0);
+	AddDefaultWeapon(kv, "weapon_autoshotgun", 1, 1, 0.0);
+	AddDefaultWeapon(kv, "weapon_rifle_m60", 0, 0, 1.2);
+	AddDefaultWeapon(kv, "weapon_grenade_launcher", 1, 0, 2.5);
+	bool saved = kv.ExportToFile(path);
+	delete kv;
+	if (!saved) LogError("默认武器配置生成失败：%s", path);
+	return saved;
+}
 
 bool LoadConfig()
 {
 	char path[PLATFORM_MAX_PATH]; CfgPath(path, sizeof path);
+	if (!FileExists(path) && !CreateDefaultConfig(path)) return false;
 	KeyValues kv = new KeyValues("Weapons");
 	if (!kv.ImportFromFile(path)) { LogError("武器配置读取失败：%s", path); delete kv; return false; }
 	StringMap cfg = new StringMap(); char key[64];
@@ -203,10 +229,6 @@ float ReloadSeconds(const char[] className, int weapon, int client)
 	return seconds;
 }
 
-// ---------------------------------------------------------------------------
-// 脚本弹容配置 / 临时抬高
-// ---------------------------------------------------------------------------
-
 int GetConfiguredClip(const char[] className)
 {
 	WeaponCfg w;
@@ -272,10 +294,6 @@ void ReleaseAttr(int client)
 	L4D2_SetIntWeaponAttribute(className, L4D2IWA_ClipSize, a.baseClip); g_attr.Remove(className); ApplyClip(className);
 }
 
-// ---------------------------------------------------------------------------
-// 玩家 / 武器判定与弹药工具
-// ---------------------------------------------------------------------------
-
 bool IsAlive(int client)
 {
 	return client >= 1 && client <= MaxClients && IsClientInGame(client) && GetClientTeam(client) == 2 && IsPlayerAlive(client);
@@ -315,10 +333,6 @@ int ShotsSince(int client, int mark)
 	int diff = g_shots[client] - mark; return diff > 0 ? diff : 0;
 }
 
-// ---------------------------------------------------------------------------
-// 起手 / 满匣按 R / 上限拦截
-// ---------------------------------------------------------------------------
-
 public void OnEntityCreated(int entity, const char[] classname)
 {
 	if (StrEqual(classname, AMMO_PILE)) { HookPile(entity); return; }
@@ -347,7 +361,7 @@ public Action OnReloadPre(int weapon)
 	char className[64]; GetEntityClassname(weapon, className, sizeof className);
 	int maxClip = ClipSize(className);
 	if (maxClip <= 0) return Plugin_Continue;
-	int copies = IsDual(weapon) ? 2 : 1; int clip = GetWeaponClip(weapon); // 单持 1 把、双持 2 把；每把 +1
+	int copies = IsDual(weapon) ? 2 : 1; int clip = GetWeaponClip(weapon);
 	int full = maxClip * copies; bool press = g_pressTime[client] > 0.0 && GetGameTime() - g_pressTime[client] <= PRESS_WINDOW;
 	bool tactical = clip > 0 && (clip != full || (press && !g_pressAttack[client]));
 	g_pressTime[client] = 0.0;
@@ -410,10 +424,6 @@ bool ShouldBlock(int client, int weapon)
 	if (bonus <= 0 || maxClip <= 0) return false;
 	return GetWeaponClip(weapon) >= (maxClip + bonus) * (IsDual(weapon) ? 2 : 1);
 }
-
-// ---------------------------------------------------------------------------
-// 轮询：显示维护 / 结算 / 超时
-// ---------------------------------------------------------------------------
 
 void StartPoll()
 {
@@ -511,10 +521,6 @@ void ResetClient(int client)
 	g_pressTime[client] = 0.0; g_pressAttack[client] = false; g_attack[client] = false; g_reloadKey[client] = false;
 }
 
-// ---------------------------------------------------------------------------
-// 游戏事件
-// ---------------------------------------------------------------------------
-
 public void Event_WeaponReload(Event event, const char[] name, bool dontBroadcast)
 {
 	if (!g_enable || g_mode != MODE_CSGO) return;
@@ -558,10 +564,6 @@ public Action Timer_Refill(Handle timer, DataPack dp)
 	Dbg("%N 定时回填：弹匣 %d -> %d", client, clip, achieved);
 	return Plugin_Continue;
 }
-
-// ---------------------------------------------------------------------------
-// 弹药堆：+1 占满拾取预算时补齐最后一档
-// ---------------------------------------------------------------------------
 
 void HookPile(int entity)
 {

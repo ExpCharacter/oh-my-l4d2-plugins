@@ -24,7 +24,7 @@
 #include <clientprefs>
 #include <sendproxy>
 
-#define PLUGIN_VERSION "2.0.8"
+#define PLUGIN_VERSION "2.0.9"
 #define HUD_SLOTS 9
 #define HUD_DETAILS 7
 #define HUD_MOUSE 8
@@ -38,7 +38,6 @@
 #define KEY_WIDTH 0.04
 #define KEY_HEIGHT 0.045
 #define KEY_ROW_STEP 0.027
-#define HUD_FLAG_BLINK (1 << 3)
 #define HUD_FLAG_NOBG (1 << 6)
 #define HUD_FLAG_ALIGN_CENTER (1 << 9)
 #define HUD_FLAG_TEXT (1 << 13)
@@ -49,9 +48,8 @@
 #define OPT_TAKEOFF (1 << 2)
 #define OPT_MOUSE (1 << 3)
 #define OPT_BLANKS (1 << 4)
-#define OPT_CONFLICT (1 << 5)
 #define OPT_SPECTATE (1 << 6)
-#define DEFAULT_OPTIONS (OPT_ENABLED | OPT_CONFLICT | OPT_SPECTATE)
+#define DEFAULT_OPTIONS (OPT_ENABLED | OPT_SPECTATE)
 #define ADJUST_BLOCK (IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT | IN_ATTACK | IN_ATTACK2 | IN_JUMP | IN_DUCK | IN_SPEED | IN_USE | IN_RELOAD)
 
 enum { MOVE_NONE, MOVE_NUMBER, MOVE_KEYS };
@@ -62,12 +60,12 @@ float g_NumberX[MAXPLAYERS + 1], g_NumberY[MAXPLAYERS + 1];
 float g_KeysX[MAXPLAYERS + 1], g_KeysY[MAXPLAYERS + 1];
 bool g_PrefsDirty[MAXPLAYERS + 1];
 Cookie g_Prefs;
-ConVar g_Enable;
+ConVar g_Refresh;
 bool g_Ready, g_Conflict, g_MouseConflict;
 int g_ProxyRef = INVALID_ENT_REFERENCE;
 bool g_Hooks[HUD_SLOTS][6], g_ModeHook, g_IntegerHook;
 Handle g_InitTimer;
-float g_NextConflictCheck;
+float g_NextConflictCheck, g_NextHud;
 int g_Buttons[MAXPLAYERS + 1], g_Mouse[MAXPLAYERS + 1];
 float g_MouseUntil[MAXPLAYERS + 1];
 float g_Speed[MAXPLAYERS + 1], g_TakeoffSpeed[MAXPLAYERS + 1];
@@ -76,7 +74,6 @@ MoveType g_LastMove[MAXPLAYERS + 1];
 bool g_Visible[MAXPLAYERS + 1];
 int g_IntegerSpeed[MAXPLAYERS + 1];
 char g_Text[MAXPLAYERS + 1][HUD_SLOTS][HUD_TEXT];
-int g_Flags[MAXPLAYERS + 1][HUD_SLOTS];
 int g_MoveTarget[MAXPLAYERS + 1], g_LastButtons[MAXPLAYERS + 1];
 MoveType g_OldMove[MAXPLAYERS + 1];
 float g_LockedAngles[MAXPLAYERS + 1][3];
@@ -94,8 +91,7 @@ public Plugin myinfo =
 public void OnPluginStart()
 {
     CreateConVar("l4d2_mhud_version", PLUGIN_VERSION, "Movement HUD version", FCVAR_NOTIFY | FCVAR_DONTRECORD);
-    g_Enable = CreateConVar("l4d2_mhud_enable", "1", "Enable the movement HUD", FCVAR_NONE, true, 0.0, true, 1.0);
-    g_Enable.AddChangeHook(EnableChanged);
+    g_Refresh = CreateConVar("l4d2_mhud_refresh_hz", "0", "HUD rebuild/send limit in Hz; 0 = every server tick", FCVAR_NONE, true, 0.0, true, 1000.0);
     g_Prefs = new Cookie("l4d2_mhud_ems_v2", "Movement HUD layout and options", CookieAccess_Private);
     RegConsoleCmd("sm_mhud", Cmd_Menu, "移动 HUD 设置");
     RegConsoleCmd("sm_mhud_reset", Cmd_Reset, "恢复移动 HUD 默认布局");
@@ -199,10 +195,12 @@ bool DecodePrefs(int client, const char[] value)
     if (!StringToIntEx(parts[1], options) || !StringToIntEx(parts[2], spacing)
         || !StringToFloatEx(parts[3], nx) || !StringToFloatEx(parts[4], ny)
         || !StringToFloatEx(parts[5], kx) || !StringToFloatEx(parts[6], ky)) return false;
-    if (options < 0 || options > 127 || spacing < 1 || spacing > 5
+    if (spacing < 1 || spacing > 5
         || !FiniteCoordinate(nx) || !FiniteCoordinate(ny)
         || !FiniteCoordinate(kx) || !FiniteCoordinate(ky)) return false;
-    g_Options[client] = options;
+    // Keep saved layouts when clearing retired option bits.
+    g_Options[client] = options & (OPT_ENABLED | OPT_DECIMAL | OPT_TAKEOFF | OPT_MOUSE | OPT_BLANKS | OPT_SPECTATE);
+    if (options != g_Options[client]) g_PrefsDirty[client] = true;
     g_Spacing[client] = spacing;
     g_NumberX[client] = nx;
     g_NumberY[client] = ny;
@@ -217,7 +215,7 @@ public void OnClientCookiesCached(int client)
     if (g_PrefsDirty[client]) { SavePrefs(client); return; }
     char value[100];
     g_Prefs.Get(client, value, sizeof(value));
-    if (value[0]) DecodePrefs(client, value);
+    if (value[0] && DecodePrefs(client, value)) SavePrefs(client);
 }
 
 void SavePrefs(int client)
@@ -321,22 +319,12 @@ int HudTarget(int client)
     return target > 0 && target <= MaxClients && IsClientInGame(target) && IsPlayerAlive(target) ? target : 0;
 }
 
-bool Overlap(int buttons)
-{
-    return (buttons & (IN_FORWARD | IN_BACK)) == (IN_FORWARD | IN_BACK)
-        || (buttons & (IN_MOVELEFT | IN_MOVERIGHT)) == (IN_MOVELEFT | IN_MOVERIGHT);
-}
-
 void BuildClientHud(int client)
 {
     int target = HudTarget(client);
-    g_Visible[client] = g_Enable.BoolValue && (g_Options[client] & OPT_ENABLED) != 0 && target != 0
+    g_Visible[client] = (g_Options[client] & OPT_ENABLED) != 0 && target != 0
         && !(GetEntProp(client, Prop_Send, "m_iHideHUD") & (1 << 2));
-    for (int slot = 0; slot < HUD_SLOTS; slot++)
-    {
-        g_Text[client][slot][0] = '\0';
-        g_Flags[client][slot] = HUD_BASE_FLAGS | HUD_FLAG_NOTVISIBLE;
-    }
+    for (int slot = 0; slot < HUD_SLOTS; slot++) g_Text[client][slot][0] = '\0';
     if (!g_Visible[client]) return;
     FormatEx(g_Text[client][0], HUD_TEXT, g_Options[client] & OPT_DECIMAL ? "%.2f" : "%.0f", g_Speed[target]);
     if ((g_Options[client] & OPT_TAKEOFF) && g_HaveTakeoff[target])
@@ -345,63 +333,51 @@ void BuildClientHud(int client)
             g_Options[client] & OPT_DECIMAL ? "\n\n    (%.2f)    " : "\n\n    (%.0f)    ", g_TakeoffSpeed[target]);
     }
     float now = GetGameTime();
-    if (g_Options[client] & OPT_MOUSE)
-    {
-        FormatEx(g_Text[client][HUD_MOUSE], HUD_TEXT, "%s    %s    ",
-            g_Text[client][HUD_DETAILS][0] ? "\n\n\n\n" : "\n\n",
-            now < g_MouseUntil[target] ? (g_Mouse[target] < 0 ? "←" : "→") : "·");
-        g_Flags[client][HUD_MOUSE] = HUD_BASE_FLAGS;
-    }
-    if (g_Text[client][HUD_DETAILS][0]) g_Flags[client][HUD_DETAILS] = HUD_BASE_FLAGS;
-    g_Flags[client][0] = HUD_BASE_FLAGS;
+    // The direction line sits below the key block, centered on it; an idle
+    // mouse leaves the slot empty so nothing is drawn.
+    if ((g_Options[client] & OPT_MOUSE) && now < g_MouseUntil[target])
+        FormatEx(g_Text[client][HUD_MOUSE], HUD_TEXT, "    %s    ", g_Mouse[target] < 0 ? "←" : "→");
     // Primary speed is always one line. Auxiliary blocks keep the same center
     // and use an odd line count to place their last line one/two font rows below.
     // Symmetric spaces make the visible row wider than a blank newline's glyph
     // metrics without moving the visible text's horizontal center.
     g_IntegerSpeed[client] = RoundToNearest(g_Speed[target]);
-    if (!(g_Options[client] & (OPT_DECIMAL | OPT_TAKEOFF | OPT_MOUSE)))
-        g_Flags[client][0] &= ~HUD_FLAG_TEXT;
     bool preview = g_MoveTarget[client] != MOVE_NONE;
-    bool overlap = !preview && (g_Options[client] & OPT_CONFLICT) && Overlap(g_Buttons[target]);
     for (int key = 0; key < KEY_COUNT; key++)
     {
         int slot = key + 1;
         if (preview || (g_Buttons[target] & KEY_BUTTONS[key]))
             strcopy(g_Text[client][slot], HUD_TEXT, KEY_LABELS[key]);
         else if (g_Options[client] & OPT_BLANKS) strcopy(g_Text[client][slot], HUD_TEXT, "_");
-        if (g_Text[client][slot][0]) g_Flags[client][slot] = HUD_BASE_FLAGS | (overlap ? HUD_FLAG_BLINK : 0);
     }
+}
+
+bool SlotOccupied(int slot)
+{
+    if (GameRules_GetProp("m_iScriptedHUDFlags", _, slot) & HUD_FLAG_NOTVISIBLE) return false;
+    char value[128];
+    GameRules_GetPropString("m_szScriptedHUDStringSet", value, sizeof(value), slot);
+    return value[0] || GameRules_GetProp("m_iScriptedHUDInts", _, slot)
+        || GameRules_GetPropFloat("m_fScriptedHUDFloats", slot) != 0.0;
+}
+
+void RequestHudRefresh()
+{
+    g_NextHud = 0.0;
 }
 
 void CheckConflict()
 {
     bool conflict;
     for (int slot = 0; slot < HUD_MOUSE; slot++)
-    {
-        if (GameRules_GetProp("m_iScriptedHUDFlags", _, slot) & HUD_FLAG_NOTVISIBLE) continue;
-        char value[128];
-        GameRules_GetPropString("m_szScriptedHUDStringSet", value, sizeof(value), slot);
-        if (value[0] || GameRules_GetProp("m_iScriptedHUDInts", _, slot)
-            || GameRules_GetPropFloat("m_fScriptedHUDFloats", slot) != 0.0) { conflict = true; break; }
-    }
+        if (SlotOccupied(slot)) { conflict = true; break; }
     if (conflict != g_Conflict) LogMessage("EMS slots 0-7 %s", conflict ? "occupied; movement HUD yields to map/other plugin" : "available; movement HUD resumed");
+    g_MouseConflict = SlotOccupied(HUD_MOUSE_SLOT);
+    // StartMove already refuses new edits while occupied, so only the idle to
+    // occupied transition needs to interrupt edits already in progress.
+    if (conflict && !g_Conflict)
+        for (int client = 1; client <= MaxClients; client++) CancelMove(client, true);
     g_Conflict = conflict;
-    g_MouseConflict = !(GameRules_GetProp("m_iScriptedHUDFlags", _, HUD_MOUSE_SLOT) & HUD_FLAG_NOTVISIBLE);
-    if (g_MouseConflict)
-    {
-        char mouseText[128];
-        GameRules_GetPropString("m_szScriptedHUDStringSet", mouseText, sizeof(mouseText), HUD_MOUSE_SLOT);
-        g_MouseConflict = mouseText[0] || GameRules_GetProp("m_iScriptedHUDInts", _, HUD_MOUSE_SLOT)
-            || GameRules_GetPropFloat("m_fScriptedHUDFloats", HUD_MOUSE_SLOT) != 0.0;
-    }
-    if (conflict)
-        for (int client = 1; client <= MaxClients; client++) CancelMove(client, true);
-}
-
-public void EnableChanged(ConVar convar, const char[] oldValue, const char[] newValue)
-{
-    if (!g_Enable.BoolValue)
-        for (int client = 1; client <= MaxClients; client++) CancelMove(client, true);
 }
 
 public void OnGameFrame()
@@ -409,7 +385,9 @@ public void OnGameFrame()
     if (!g_Ready) return;
     float now = GetGameTime();
     if (now >= g_NextConflictCheck) { CheckConflict(); g_NextConflictCheck = now + 0.5; }
-    // Refresh on every server game frame, following the server tick rate.
+    float hz = g_Refresh.FloatValue;
+    if (hz > 0.0 && now < g_NextHud) return;
+    // Refresh every server game frame by default, or at the configured Hz limit.
     bool hasReceiver;
     for (int client = 1; client <= MaxClients; client++)
         if (IsClientInGame(client) && !IsFakeClient(client))
@@ -421,11 +399,13 @@ public void OnGameFrame()
     // otherwise an unchanged GameRules entity can keep sending its initial HUD forever.
     int proxy = EntRefToEntIndex(g_ProxyRef);
     if (hasReceiver && proxy != INVALID_ENT_REFERENCE) ChangeEdictState(proxy);
+    g_NextHud = hz > 0.0 ? now + 1.0 / hz : 0.0;
 }
 
-bool CanOverride(int client)
+bool CanOverride(int client, int slot = 0)
 {
-    return g_Ready && !g_Conflict && client > 0 && client <= MaxClients && IsClientInGame(client);
+    return g_Ready && !g_Conflict && client > 0 && client <= MaxClients && IsClientInGame(client)
+        && (slot != HUD_MOUSE || (!g_MouseConflict && (g_Options[client] & OPT_MOUSE) != 0));
 }
 
 public Action ProxyMode(const char[] prop, int &value, int element, int client)
@@ -444,22 +424,26 @@ public Action ProxyIntegerSpeed(const char[] prop, int &value, int element, int 
 
 Action ProxyFlags(int slot, int client, int &value)
 {
-    if (!CanOverride(client)) return Plugin_Continue;
-    if (slot == HUD_MOUSE && (g_MouseConflict || !(g_Options[client] & OPT_MOUSE))) return Plugin_Continue;
-    value = g_Visible[client] ? g_Flags[client][slot] : HUD_BASE_FLAGS | HUD_FLAG_NOTVISIBLE;
+    if (!CanOverride(client, slot)) return Plugin_Continue;
+    if (!g_Visible[client] || !g_Text[client][slot][0])
+    {
+        value = HUD_BASE_FLAGS | HUD_FLAG_NOTVISIBLE;
+        return Plugin_Changed;
+    }
+    value = HUD_BASE_FLAGS;
     return Plugin_Changed;
 }
 
 Action ProxyString(int slot, int client, char[] value, int maxlength)
 {
-    if (!CanOverride(client)) return Plugin_Continue;
-    if (slot == HUD_MOUSE && (g_MouseConflict || !(g_Options[client] & OPT_MOUSE))) return Plugin_Continue;
+    if (!CanOverride(client, slot)) return Plugin_Continue;
     strcopy(value, maxlength, g_Visible[client] ? g_Text[client][slot] : "");
     return Plugin_Changed;
 }
 
 float HudPosX(int client, int slot)
 {
+    if (slot == HUD_MOUSE) return g_KeysX[client] - HudWidth(slot) * 0.5;
     if (slot == 0 || slot >= HUD_DETAILS) return g_NumberX[client] - HudWidth(slot) * 0.5;
     int col = (slot - 1) % 3;
     return g_KeysX[client] + float(col - 1) * KeyStep(client) - KEY_WIDTH * 0.5;
@@ -467,16 +451,15 @@ float HudPosX(int client, int slot)
 
 float HudPosY(int client, int slot)
 {
+    if (slot == HUD_MOUSE) return g_KeysY[client] + 2 * KEY_ROW_STEP;
     if (slot == 0 || slot >= HUD_DETAILS)
-        return g_NumberY[client] - float(HudRow(client, slot)) * SPEED_HEIGHT;
+        return g_NumberY[client] - float(HudRow(slot)) * SPEED_HEIGHT;
     return g_KeysY[client] + float((slot - 1) / 3) * KEY_ROW_STEP;
 }
 
-int HudRow(int client, int slot)
+int HudRow(int slot)
 {
-    if (slot == HUD_DETAILS) return 1;
-    if (slot == HUD_MOUSE) return g_Text[client][HUD_DETAILS][0] ? 2 : 1;
-    return 0;
+    return slot == HUD_DETAILS ? 1 : 0;
 }
 
 float HudWidth(int slot)
@@ -487,14 +470,15 @@ float HudWidth(int slot)
 
 Action ProxyFloat(int slot, int client, float &value, int field)
 {
-    if (!CanOverride(client)) return Plugin_Continue;
-    if (slot == HUD_MOUSE && (g_MouseConflict || !(g_Options[client] & OPT_MOUSE))) return Plugin_Continue;
+    if (!CanOverride(client, slot)) return Plugin_Continue;
     switch (field)
     {
         case 0: value = HudPosX(client, slot);
         case 1: value = HudPosY(client, slot);
         case 2: value = HudWidth(slot);
-        case 3: value = slot == 0 || slot >= HUD_DETAILS ? SPEED_HEIGHT * float(2 * HudRow(client, slot) + 1) : KEY_HEIGHT;
+        case 3:
+            if (slot == HUD_MOUSE) value = KEY_HEIGHT;
+            else value = slot == 0 || slot >= HUD_DETAILS ? SPEED_HEIGHT * float(2 * HudRow(slot) + 1) : KEY_HEIGHT;
     }
     return Plugin_Changed;
 }
@@ -517,21 +501,21 @@ SLOT_CALLBACKS(6)
 SLOT_CALLBACKS(7)
 SLOT_CALLBACKS(8)
 
-#define HOOK_SLOT(%1) \
-g_Hooks[%1][0] = SendProxy_HookGameRules("m_iScriptedHUDFlags", Prop_Int, Flags%1, %1); \
-g_Hooks[%1][1] = SendProxy_HookGameRules("m_szScriptedHUDStringSet", Prop_String, Text%1, %1); \
-g_Hooks[%1][2] = SendProxy_HookGameRules("m_fScriptedHUDPosX", Prop_Float, PosX%1, %1); \
-g_Hooks[%1][3] = SendProxy_HookGameRules("m_fScriptedHUDPosY", Prop_Float, PosY%1, %1); \
-g_Hooks[%1][4] = SendProxy_HookGameRules("m_fScriptedHUDWidth", Prop_Float, Width%1, %1); \
-g_Hooks[%1][5] = SendProxy_HookGameRules("m_fScriptedHUDHeight", Prop_Float, Height%1, %1);
+#define HOOK_SLOT(%1,%2) \
+g_Hooks[%1][0] = SendProxy_HookGameRules("m_iScriptedHUDFlags", Prop_Int, Flags%1, %2); \
+g_Hooks[%1][1] = SendProxy_HookGameRules("m_szScriptedHUDStringSet", Prop_String, Text%1, %2); \
+g_Hooks[%1][2] = SendProxy_HookGameRules("m_fScriptedHUDPosX", Prop_Float, PosX%1, %2); \
+g_Hooks[%1][3] = SendProxy_HookGameRules("m_fScriptedHUDPosY", Prop_Float, PosY%1, %2); \
+g_Hooks[%1][4] = SendProxy_HookGameRules("m_fScriptedHUDWidth", Prop_Float, Width%1, %2); \
+g_Hooks[%1][5] = SendProxy_HookGameRules("m_fScriptedHUDHeight", Prop_Float, Height%1, %2);
 
-#define UNHOOK_SLOT(%1) \
-if (g_Hooks[%1][0]) SendProxy_UnhookGameRules("m_iScriptedHUDFlags", Flags%1, %1); \
-if (g_Hooks[%1][1]) SendProxy_UnhookGameRules("m_szScriptedHUDStringSet", Text%1, %1); \
-if (g_Hooks[%1][2]) SendProxy_UnhookGameRules("m_fScriptedHUDPosX", PosX%1, %1); \
-if (g_Hooks[%1][3]) SendProxy_UnhookGameRules("m_fScriptedHUDPosY", PosY%1, %1); \
-if (g_Hooks[%1][4]) SendProxy_UnhookGameRules("m_fScriptedHUDWidth", Width%1, %1); \
-if (g_Hooks[%1][5]) SendProxy_UnhookGameRules("m_fScriptedHUDHeight", Height%1, %1);
+#define UNHOOK_SLOT(%1,%2) \
+if (g_Hooks[%1][0]) SendProxy_UnhookGameRules("m_iScriptedHUDFlags", Flags%1, %2); \
+if (g_Hooks[%1][1]) SendProxy_UnhookGameRules("m_szScriptedHUDStringSet", Text%1, %2); \
+if (g_Hooks[%1][2]) SendProxy_UnhookGameRules("m_fScriptedHUDPosX", PosX%1, %2); \
+if (g_Hooks[%1][3]) SendProxy_UnhookGameRules("m_fScriptedHUDPosY", PosY%1, %2); \
+if (g_Hooks[%1][4]) SendProxy_UnhookGameRules("m_fScriptedHUDWidth", Width%1, %2); \
+if (g_Hooks[%1][5]) SendProxy_UnhookGameRules("m_fScriptedHUDHeight", Height%1, %2);
 
 void InitProxies()
 {
@@ -541,22 +525,17 @@ void InitProxies()
     g_ProxyRef = EntIndexToEntRef(proxy);
     g_ModeHook = SendProxy_HookGameRules("m_bChallengeModeActive", Prop_Int, ProxyMode);
     g_IntegerHook = SendProxy_HookGameRules("m_iScriptedHUDInts", Prop_Int, ProxyIntegerSpeed, 0);
-    HOOK_SLOT(0)
-    HOOK_SLOT(1)
-    HOOK_SLOT(2)
-    HOOK_SLOT(3)
-    HOOK_SLOT(4)
-    HOOK_SLOT(5)
-    HOOK_SLOT(6)
-    HOOK_SLOT(7)
-    g_Hooks[HUD_MOUSE][0] = SendProxy_HookGameRules("m_iScriptedHUDFlags", Prop_Int, Flags8, HUD_MOUSE_SLOT);
-    g_Hooks[HUD_MOUSE][1] = SendProxy_HookGameRules("m_szScriptedHUDStringSet", Prop_String, Text8, HUD_MOUSE_SLOT);
-    g_Hooks[HUD_MOUSE][2] = SendProxy_HookGameRules("m_fScriptedHUDPosX", Prop_Float, PosX8, HUD_MOUSE_SLOT);
-    g_Hooks[HUD_MOUSE][3] = SendProxy_HookGameRules("m_fScriptedHUDPosY", Prop_Float, PosY8, HUD_MOUSE_SLOT);
-    g_Hooks[HUD_MOUSE][4] = SendProxy_HookGameRules("m_fScriptedHUDWidth", Prop_Float, Width8, HUD_MOUSE_SLOT);
-    g_Hooks[HUD_MOUSE][5] = SendProxy_HookGameRules("m_fScriptedHUDHeight", Prop_Float, Height8, HUD_MOUSE_SLOT);
-    bool okay = g_ModeHook && g_IntegerHook;
-    for (int slot = 0; slot < HUD_SLOTS; slot++)
+    HOOK_SLOT(0, 0)
+    HOOK_SLOT(1, 1)
+    HOOK_SLOT(2, 2)
+    HOOK_SLOT(3, 3)
+    HOOK_SLOT(4, 4)
+    HOOK_SLOT(5, 5)
+    HOOK_SLOT(6, 6)
+    HOOK_SLOT(7, 7)
+    // Macro arguments are pasted, not pre-expanded, so the logical slot must be literal.
+    HOOK_SLOT(8, HUD_MOUSE_SLOT)
+    bool okay = g_ModeHook && g_IntegerHook;    for (int slot = 0; slot < HUD_SLOTS; slot++)
         for (int field = 0; field < sizeof(g_Hooks[]); field++)
             if (!g_Hooks[slot][field]) okay = false;
     if (!okay) { UnhookProxies(); SetFailState("Failed to attach EMS HUD send proxies"); return; }
@@ -572,20 +551,15 @@ void UnhookProxies()
     {
         if (g_ModeHook) SendProxy_UnhookGameRules("m_bChallengeModeActive", ProxyMode);
         if (g_IntegerHook) SendProxy_UnhookGameRules("m_iScriptedHUDInts", ProxyIntegerSpeed, 0);
-        UNHOOK_SLOT(0)
-        UNHOOK_SLOT(1)
-        UNHOOK_SLOT(2)
-        UNHOOK_SLOT(3)
-        UNHOOK_SLOT(4)
-        UNHOOK_SLOT(5)
-        UNHOOK_SLOT(6)
-        UNHOOK_SLOT(7)
-        if (g_Hooks[HUD_MOUSE][0]) SendProxy_UnhookGameRules("m_iScriptedHUDFlags", Flags8, HUD_MOUSE_SLOT);
-        if (g_Hooks[HUD_MOUSE][1]) SendProxy_UnhookGameRules("m_szScriptedHUDStringSet", Text8, HUD_MOUSE_SLOT);
-        if (g_Hooks[HUD_MOUSE][2]) SendProxy_UnhookGameRules("m_fScriptedHUDPosX", PosX8, HUD_MOUSE_SLOT);
-        if (g_Hooks[HUD_MOUSE][3]) SendProxy_UnhookGameRules("m_fScriptedHUDPosY", PosY8, HUD_MOUSE_SLOT);
-        if (g_Hooks[HUD_MOUSE][4]) SendProxy_UnhookGameRules("m_fScriptedHUDWidth", Width8, HUD_MOUSE_SLOT);
-        if (g_Hooks[HUD_MOUSE][5]) SendProxy_UnhookGameRules("m_fScriptedHUDHeight", Height8, HUD_MOUSE_SLOT);
+        UNHOOK_SLOT(0, 0)
+        UNHOOK_SLOT(1, 1)
+        UNHOOK_SLOT(2, 2)
+        UNHOOK_SLOT(3, 3)
+        UNHOOK_SLOT(4, 4)
+        UNHOOK_SLOT(5, 5)
+        UNHOOK_SLOT(6, 6)
+        UNHOOK_SLOT(7, 7)
+        UNHOOK_SLOT(8, HUD_MOUSE_SLOT)
     }
     g_ModeHook = false;
     g_IntegerHook = false;
@@ -609,6 +583,7 @@ public Action Cmd_Reset(int client, int args)
     ResetPrefs(client);
     g_PrefsDirty[client] = true;
     SavePrefs(client);
+    RequestHudRefresh();
     ReplyToCommand(client, "[MHUD] 已恢复默认布局和设置。");
     ShowMenu(client);
     return Plugin_Handled;
@@ -627,7 +602,6 @@ void ShowMenu(int client)
     menu.AddItem("decimal", g_Options[client] & OPT_DECIMAL ? "速度小数：显示" : "速度小数：隐藏");
     menu.AddItem("takeoff", g_Options[client] & OPT_TAKEOFF ? "起跳速度：显示" : "起跳速度：隐藏");
     menu.AddItem("blanks", g_Options[client] & OPT_BLANKS ? "未按下：下划线" : "未按下：隐藏");
-    menu.AddItem("conflict", g_Options[client] & OPT_CONFLICT ? "冲突提示：红白闪烁" : "冲突提示：关闭");
     menu.AddItem("mouse", g_Options[client] & OPT_MOUSE ? "鼠标方向：显示" : "鼠标方向：隐藏");
     menu.AddItem("spectate", g_Options[client] & OPT_SPECTATE ? "观战时：跟随目标" : "观战时：隐藏");
     menu.AddItem("reset", "恢复默认设置");
@@ -648,12 +622,12 @@ public int Menu_Settings(Menu menu, MenuAction action, int client, int item)
         else if (StrEqual(info, "decimal")) g_Options[client] ^= OPT_DECIMAL;
         else if (StrEqual(info, "takeoff")) g_Options[client] ^= OPT_TAKEOFF;
         else if (StrEqual(info, "blanks")) g_Options[client] ^= OPT_BLANKS;
-        else if (StrEqual(info, "conflict")) g_Options[client] ^= OPT_CONFLICT;
         else if (StrEqual(info, "mouse")) g_Options[client] ^= OPT_MOUSE;
         else if (StrEqual(info, "spectate")) g_Options[client] ^= OPT_SPECTATE;
         g_PrefsDirty[client] = true;
         SavePrefs(client);
         BuildClientHud(client);
+        RequestHudRefresh();
         ShowMenu(client);
     }
     return 0;
@@ -672,6 +646,7 @@ void StartMove(int client, int target)
     g_LastButtons[client] = IN_ATTACK;
     g_SuppressAttack[client] = false;
     BuildClientHud(client);
+    RequestHudRefresh();
     PrintToChat(client, "[MHUD] WASD 调整%s，鼠标左键保存；!mhud 返回菜单。", target == MOVE_NUMBER ? "速度位置" : "按键位置");
 }
 
