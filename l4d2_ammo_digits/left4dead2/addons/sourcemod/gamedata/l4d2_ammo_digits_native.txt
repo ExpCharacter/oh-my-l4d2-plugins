@@ -2,219 +2,395 @@
 {
 	"left4dead2"
 	{
+		"Keys"
+		{
+			"ServerGameDLL.Interface"	"ServerGameDLL005"
+		}
+
+		// Native layout and capacities; protocol constants stay in SourcePawn.
 		"Offsets"
 		{
+			// Platform
 			"Windows32"
 			{
 				"windows"	"1"
-				"linux"		"0"
+				"linux"	"0"
 			}
 			"Linux32"
 			{
 				"windows"	"0"
-				"linux"		"1"
+				"linux"	"1"
+			}
+
+			// ServerGameDLL
+			"ServerGameDLL.GetAllServerClasses"
+			{
+				"windows"	"10"
+				"linux"	"10"
+			}
+
+			// SendProp
+			"SendProp.Size"
+			{
+				"windows"	"84"
+				"linux"	"84"
+			}
+			"SendProp.Type"
+			{
+				"windows"	"8"
+				"linux"	"8"
+			}
+			"SendProp.Bits"
+			{
+				"windows"	"12"
+				"linux"	"12"
+			}
+			"SendProp.Low"
+			{
+				"windows"	"16"
+				"linux"	"16"
+			}
+			"SendProp.High"
+			{
+				"windows"	"20"
+				"linux"	"20"
+			}
+			"SendProp.Elements"
+			{
+				"windows"	"32"
+				"linux"	"32"
+			}
+			"SendProp.Exclude"
+			{
+				"windows"	"40"
+				"linux"	"40"
+			}
+			"SendProp.Name"
+			{
+				"windows"	"48"
+				"linux"	"48"
+			}
+			"SendProp.Priority"
+			{
+				"windows"	"56"
+				"linux"	"56"
+			}
+			"SendProp.Flags"
+			{
+				"windows"	"60"
+				"linux"	"60"
+			}
+			"SendProp.Table"
+			{
+				"windows"	"72"
+				"linux"	"72"
+			}
+
+			// SendTable
+			"SendTable.ReadSize"
+			{
+				"windows"	"12"
+				"linux"	"12"
+			}
+			"SendTable.Props"
+			{
+				"windows"	"0"
+				"linux"	"0"
+			}
+			"SendTable.Count"
+			{
+				"windows"	"4"
+				"linux"	"4"
+			}
+			"SendTable.Name"
+			{
+				"windows"	"8"
+				"linux"	"8"
+			}
+			"SendTable.BufferBytes"
+			{
+				"windows"	"4096"
+				"linux"	"4096"
+			}
+			// Linux SVC_SendTable length field offset; Windows reads its instruction operand.
+			"SendTable.MessageLengthOffset"
+			{
+				"linux"	"132"
+			}
+			// Linux SVC_SendTable payload pointer field offset; Windows reads its instruction operand.
+			"SendTable.MessageDataOffset"
+			{
+				"linux"	"120"
+			}
+			"SendTable.CacheBytes"
+			{
+				"linux"	"228000"
+			}
+
+			// ServerClass
+			"ServerClass.ReadSize"
+			{
+				"windows"	"16"
+				"linux"	"16"
+			}
+			"ServerClass.Name"
+			{
+				"windows"	"0"
+				"linux"	"0"
+			}
+			"ServerClass.Table"
+			{
+				"windows"	"4"
+				"linux"	"4"
+			}
+			"ServerClass.Next"
+			{
+				"windows"	"8"
+				"linux"	"8"
+			}
+			"ServerClass.Id"
+			{
+				"windows"	"12"
+				"linux"	"12"
+			}
+
+			// BfWrite
+			"BfWrite.ReadSize"
+			{
+				"windows"	"20"
+				"linux"	"20"
+			}
+			"BfWrite.Data"
+			{
+				"windows"	"0"
+				"linux"	"0"
+			}
+			"BfWrite.Bytes"
+			{
+				"windows"	"4"
+				"linux"	"4"
+			}
+			"BfWrite.Bits"
+			{
+				"windows"	"8"
+				"linux"	"8"
+			}
+			"BfWrite.Cursor"
+			{
+				"windows"	"12"
+				"linux"	"12"
+			}
+			"BfWrite.Overflow"
+			{
+				"windows"	"16"
+				"linux"	"16"
+			}
+
+			// Server (Linux)
+			"Server.CacheBits"
+			{
+				"linux"	"584"
+			}
+			"Server.CacheOverflow"
+			{
+				"linux"	"588"
+			}
+			"Server.CacheData"
+			{
+				"linux"	"596"
 			}
 		}
+
+		// Derived addresses and instruction operands (read values are not all pointers).
 		"Addresses"
 		{
-			"WriteInfosAddr"
-			{
-				"signature"	"WriteInfos"
-			}
-			"ServerFactoryAddr"
-			{
-				"signature"	"ServerFactory"
-			}
-			"EngineCreateBaselineAddr"
-			{
-				"signature"	"EngineCreateBaseline"
-			}
-			"EngineAdmissionAddr"
-			{
-				"signature"	"EngineAdmission"
-			}
-			"EngineHltvAddr"
+			// Skip push edi; result points at the E8 call instruction.
+			"EngineScratchFreeCall"
 			{
 				"windows"
 				{
-					"signature"	"EngineHltv"
-				}
-			}
-			"EngineMessageAddr"
-			{
-				"signature"	"EngineMessage"
-			}
-			"EngineWriteBitsAddr"
-			{
-				"signature"	"EngineWriteBits"
-			}
-			"EngineWriteUnsignedAddr"
-			{
-				"windows"
-				{
-					"signature"	"EngineWriteUnsigned"
-				}
-			}
-			"EngineAllocAddr"
-			{
-				"linux"
-				{
-					"signature"	"EngineAlloc"
-				}
-			}
-			"ScratchAllocCallAddr"
-			{
-				"windows"
-				{
-					"signature"	"ScratchAllocCall"
-				}
-			}
-			"ScratchFreeCallAddr"
-			{
-				"windows"
-				{
-					// The feature starts at push edi; the E8 follows it.
-					"signature"	"ScratchFreeCall"
+					"signature"	"EngineScratchFreeCall"
 					"offset"	"1"
 				}
 			}
-			"EngineCrcGlobalAddr"
+			// mov [imm32], edi; result is the g_SendTableCRC field address.
+			"EngineCrcGlobal"
 			{
-				"linux"
+				"windows"
 				{
 					"signature"	"EngineCrcGlobal"
-				}
-				"windows"
-				{
-					// The CRC global is an absolute operand (mov [crc], edi).
-					"signature"	"EngineCrcGlobal"
-					"read"		"2"
+					"read"	"2"
 				}
 			}
-			"EngineServerObjectAddr"
-			{
-				"linux"
-				{
-					"signature"	"EngineServerObject"
-				}
-			}
-			"SendTableBufferAddr"
+			// mov ecx, imm32; result is the cached bf_write object address.
+			"EngineTableBuffer"
 			{
 				"windows"
 				{
-					// bf_write instance pushed to SV_WriteSendTables.
-					"signature"	"SendTableBuffer"
-					"read"		"6"
+					"signature"	"EngineTableBuffer"
+					"read"	"6"
 				}
 			}
-			"GetModuleHandleCallAddr"
+			// Read the call operand, then its IAT slot; result is GetModuleHandleA.
+			"EngineGetModuleHandleCall"
 			{
 				"windows"
 				{
-					// call [IAT slot], then the loaded import pointer.
-					"signature"	"GetModuleHandleCall"
-					"read"		"2"
-					"read"		"0"
+					"signature"	"EngineGetModuleHandleCall"
+					"read"	"2"
+					"read"	"0"
 				}
 			}
-			"GetProcAddressCallAddr"
+			// Read the call operand, then its IAT slot; result is GetProcAddress.
+			"EngineGetProcAddressCall"
 			{
 				"windows"
 				{
-					"signature"	"GetProcAddressCall"
-					"read"		"2"
-					"read"		"0"
+					"signature"	"EngineGetProcAddressCall"
+					"read"	"2"
+					"read"	"0"
+				}
+			}
+			// mov eax, [edi + disp32]; read the field offset, not the length.
+			"SendTable.MessageLengthOffset"
+			{
+				"windows"
+				{
+					"signature"	"EngineMessage"
+					"read"	"9"
+				}
+			}
+			// mov edx, [edi + disp32]; read the field offset, not the data pointer.
+			"SendTable.MessageDataOffset"
+			{
+				"windows"
+				{
+					"signature"	"EngineMessageDataRef"
+					"read"	"5"
+				}
+			}
+			// push imm32; read the cache capacity in bytes, not an address.
+			"EngineCacheBytes"
+			{
+				"windows"
+				{
+					"signature"	"EngineScratchAllocCall"
+					"read"	"11"
 				}
 			}
 		}
+
+		// Direct entry points and references; Linux uses symbols where available.
 		"Signatures"
 		{
-			"WriteInfos"
+			// SendTable_WriteInfos(SendTable*, bf_write*).
+			"EngineWriteInfos"
 			{
 				"library"	"engine"
 				"windows"	"\x55\x8B\xEC\x53\x8B\x5D\x2A\x8B\x43\x2A\x57\x8B\x7D\x2A\x50\x8B"
-				"linux"		"@_Z20SendTable_WriteInfosP9SendTableP8bf_write"
+				"linux"	"@_Z20SendTable_WriteInfosP9SendTableP8bf_write"
 			}
+			// CreateInterface export from the server module.
 			"ServerFactory"
 			{
 				"library"	"server"
 				"windows"	"@CreateInterface"
-				"linux"		"@CreateInterface"
+				"linux"	"@CreateInterface"
 			}
+			// SV_CreateBaseline().
 			"EngineCreateBaseline"
 			{
 				"library"	"engine"
-				"windows"	"\x55\x8B\xEC\xB8\xC4\x40\x00\x00\xE8\x2A\x2A\x2A\x2A\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\x53\x56\x57"
-				"linux"		"@_Z17SV_CreateBaselinev"
+				"windows"	"\x55\x8B\xEC\xB8\x2A\x2A\x2A\x2A\xE8\x2A\x2A\x2A\x2A\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\x53\x56\x57\x68\x2A\x2A\x2A\x2A\xE8\x2A\x2A\x2A\x2A"
+				"linux"	"@_Z17SV_CreateBaselinev"
 			}
+			// CBaseClient::SendServerInfo().
 			"EngineAdmission"
 			{
 				"library"	"engine"
 				"windows"	"\x55\x8B\xEC\x83\xEC\x2A\x53\x33\xDB\x56\x8B\xF1\x38\x1D\x2A\x2A\x2A\x2A\x74\x2A\xA1\x2A\x2A\x2A"
-				"linux"		"@_ZN11CBaseClient14SendServerInfoEv"
+				"linux"	"@_ZN11CBaseClient14SendServerInfoEv"
 			}
+			// Windows HLTV signon entry.
 			"EngineHltv"
 			{
 				"library"	"engine"
-				"windows"	"\x55\x8B\xEC\x83\xEC\x70\x56\x8B\xF1\xE8\x2A\x2A\x2A\x2A\x39\x86\xC0\x00\x00\x00"
+				"windows"	"\x55\x8B\xEC\x83\xEC\x2A\x56\x8B\xF1\xE8\x2A\x2A\x2A\x2A\x39\x86\x2A\x2A\x2A\x2A"
 			}
+			// SVC_SendTable::WriteToBuffer(bf_write&).
 			"EngineMessage"
 			{
 				"library"	"engine"
 				"windows"	"\x55\x8B\xEC\x56\x57\x8B\xF9\x8B\x87\x2A\x2A\x2A\x2A\x8B\x17\x6A\x01\x89\x47\x58\x8B\x42\x20\x6A\x06\xFF\xD0"
-				"linux"		"@_ZN13SVC_SendTable13WriteToBufferER8bf_write"
+				"linux"	"@_ZN13SVC_SendTable13WriteToBufferER8bf_write"
 			}
+			// bf_write::WriteBits(const void*, int).
 			"EngineWriteBits"
 			{
 				"library"	"engine"
-				"windows"	"\x55\x8B\xEC\x83\xEC\x0C\x53\x8B\x5D\x08\x56\x8B\xF1\x8B\x46\x0C\x57\x8B\x7D\x0C\x03\xC7\x3B\x46\x08\x7E\x0F"
-				"linux"		"@_ZN8bf_write9WriteBitsEPKvi"
+				"windows"	"\x55\x8B\xEC\x83\xEC\x2A\x53\x8B\x5D\x08\x56\x8B\xF1\x8B\x46\x0C\x57\x8B\x7D\x0C\x03\xC7\x3B\x46\x08\x7E\x0F"
+				"linux"	"@_ZN8bf_write9WriteBitsEPKvi"
 			}
+			// Windows unsigned bit writer.
 			"EngineWriteUnsigned"
 			{
 				"library"	"engine"
 				"windows"	"\x55\x8B\xEC\x56\x8B\xF1\x8B\x4E\x0C\x8B\x46\x08\x57\x8B\x7D\x0C\x8D\x14\x39\x3B\xD0\x7E\x0D"
 			}
+			// Linux default_bzalloc(void*, int, int).
 			"EngineAlloc"
 			{
 				"library"	"engine"
-				"linux"		"@_ZL15default_bzallocPvii"
+				"linux"	"@_ZL15default_bzallocPvii"
 			}
-			"ScratchAllocCall"
+			// SV_CreateBaseline scratch allocation call and following capacity argument.
+			"EngineScratchAllocCall"
 			{
 				"library"	"engine"
-				"windows"	"\xE8\x2A\x2A\x2A\x2A\x6A\xFF\x56\x8B\xF8\x68\xA0\x7A\x03\x00\x57"
+				"windows"	"\xE8\x2A\x2A\x2A\x2A\x6A\xFF\x56\x8B\xF8\x68\x2A\x2A\x2A\x2A\x57"
 			}
-			"ScratchFreeCall"
+			// SV_CreateBaseline scratch release: push edi followed by E8.
+			"EngineScratchFreeCall"
 			{
 				"library"	"engine"
 				"windows"	"\x57\xE8\x2A\x2A\x2A\x2A\x8B\x4D\xFC\x83\xC4\x04\x5F\x5E\x33\xCD\x5B\xE8\x2A\x2A\x2A\x2A\x8B\xE5\x5D\xC3"
 			}
+			// Windows CRC store reference; Linux g_SendTableCRC symbol.
 			"EngineCrcGlobal"
 			{
 				"library"	"engine"
 				"windows"	"\x89\x3D\x2A\x2A\x2A\x2A\x5F\x89\x15\x2A\x2A\x2A\x2A\x5E\xC3"
-				"linux"		"@g_SendTableCRC"
+				"linux"	"@g_SendTableCRC"
 			}
+			// Linux global sv.
 			"EngineServerObject"
 			{
 				"library"	"engine"
-				"linux"		"@sv"
+				"linux"	"@sv"
 			}
-			"SendTableBuffer"
+			// SV_CreateBaseline cached bf_write initialization reference.
+			"EngineTableBuffer"
 			{
 				"library"	"engine"
 				"windows"	"\x6A\xFF\x56\x50\x51\xB9\x2A\x2A\x2A\x2A\xE8\x2A\x2A\x2A\x2A"
 			}
-			"GetModuleHandleCall"
+			// Indirect call through the GetModuleHandleA import slot.
+			"EngineGetModuleHandleCall"
 			{
 				"library"	"engine"
 				"windows"	"\xFF\x15\x2A\x2A\x2A\x2A\x50\xFF\x15\x2A\x2A\x2A\x2A\x68"
 			}
-			"GetProcAddressCall"
+			// Indirect call through the GetProcAddress import slot.
+			"EngineGetProcAddressCall"
 			{
 				"library"	"engine"
 				"windows"	"\xFF\x15\x2A\x2A\x2A\x2A\xA3\x2A\x2A\x2A\x2A\x3B\xC3\x75"
+			}
+			// SVC_SendTable::WriteToBuffer payload pointer load before WriteBits.
+			"EngineMessageDataRef"
+			{
+				"library"	"engine"
+				"windows"	"\x8B\x4F\x2A\x8B\x97\x2A\x2A\x2A\x2A\x51\x52\x8B\xCE\xE8\x2A\x2A\x2A\x2A\x33\xC0\x38\x46"
 			}
 		}
 	}

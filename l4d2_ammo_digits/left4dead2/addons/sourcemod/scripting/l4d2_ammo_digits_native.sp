@@ -24,7 +24,7 @@
 #include <sdktools>
 #include <dhooks>
 
-#define PLUGIN_VERSION "0.4.0"
+#define PLUGIN_VERSION "0.4.1"
 #define SCRATCH_BYTES 8192
 #define LINUX_SCRATCH_BYTES 16384
 #define WIRE_MAX_BITS 65535
@@ -62,6 +62,8 @@ enum struct PlatformLayout
     int messageLengthOffset;
     int messageDataOffset;
     int scratchBytes;
+    int tableBufferBytes;
+    int cacheBytes;
 }
 PlatformLayout g_Layout;
 
@@ -131,7 +133,7 @@ public void OnPluginStart()
     {
         g_Alloc = StaticCallAddr(g_AllocAddr, false, true);
         g_Free = StaticCallAddr(g_FreeAddr, true, false);
-        // Reuse the engine's own network scratch allocator; its block is 228000 bytes.
+        // Reuse the engine's network scratch allocator; capacity comes from gamedata.
         // The wider storage is paired with framing below; storage alone is insufficient.
         g_Scratch = view_as<Address>(SDKCall(g_Alloc));
     }
@@ -141,18 +143,18 @@ public void OnPluginStart()
         SetFailState("Scratch allocation is not a writable mapped range");
     ResolveLiveSchema();
     char name[64], expected[8];
-    if (!MemorySpan(g_AmmoProps, 32 * 84, true)) SetFailState("Ammo properties outside writable memory");
+    if (!MemorySpan(g_AmmoProps, 32 * g_Prop.size, true)) SetFailState("Ammo properties outside writable memory");
     for (int i = 0; i < 32; i++)
     {
-        Address prop = g_AmmoProps + view_as<Address>(i * 84);
-        ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(48), NumberType_Int32)), name, sizeof(name));
+        Address prop = g_AmmoProps + view_as<Address>(i * g_Prop.size);
+        ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(g_Prop.name), NumberType_Int32)), name, sizeof(name));
         FormatEx(expected, sizeof(expected), "%03d", i);
-        if (!StrEqual(name, expected) || LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32) != 0
-            || (LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32) != 10
-                && LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32) != 16)
-            || !(LoadFromAddress(prop + view_as<Address>(60), NumberType_Int32) & 1))
+        if (!StrEqual(name, expected) || LoadFromAddress(prop + view_as<Address>(g_Prop.type), NumberType_Int32) != 0
+            || (LoadFromAddress(prop + view_as<Address>(g_Prop.bits), NumberType_Int32) != 10
+                && LoadFromAddress(prop + view_as<Address>(g_Prop.bits), NumberType_Int32) != 16)
+            || !(LoadFromAddress(prop + view_as<Address>(g_Prop.flags), NumberType_Int32) & 1))
             SetFailState("Unexpected ammo element %d", i);
-        g_OriginalBits[i] = LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32);
+        g_OriginalBits[i] = LoadFromAddress(prop + view_as<Address>(g_Prop.bits), NumberType_Int32);
     }
     g_WriteInfos = DHookCreateDetour(g_WriteInfosAddr, CallConv_CDECL, ReturnType_Bool, ThisPointer_Ignore);
     if (g_WriteInfos == null) SetFailState("Could not create WriteInfos detour");
@@ -200,9 +202,9 @@ public void OnPluginStart()
     InstallLifecycleHooks();
     for (int i = 0; i < 32; i++)
     {
-        StoreToAddress(g_AmmoProps + view_as<Address>(i * 0x54 + 12), 16, NumberType_Int32);
+        StoreToAddress(g_AmmoProps + view_as<Address>(i * g_Prop.size + g_Prop.bits), 16, NumberType_Int32);
         g_PatchApplied++;
-        if (LoadFromAddress(g_AmmoProps + view_as<Address>(i * 84 + 12), NumberType_Int32) != 16)
+        if (LoadFromAddress(g_AmmoProps + view_as<Address>(i * g_Prop.size + g_Prop.bits), NumberType_Int32) != 16)
             SetFailState("Ammo installation readback failed at element %d", i);
     }
     g_Patched = true;
@@ -252,19 +254,19 @@ public MRESReturn BeforeWriteInfos(Handle result, Handle params)
     if (!g_CacheBuilding) return MRES_Ignored;
     Address buffer = view_as<Address>(DHookGetParam(params, 2));
     Address table = view_as<Address>(DHookGetParam(params, 1));
-    if (g_Faulted || g_InfosOwned || g_InfosPending || !MemorySpan(buffer, 20, true) || !MemorySpan(table, 12)
-        || LoadFromAddress(buffer + view_as<Address>(4), NumberType_Int32) != 4096
-        || LoadFromAddress(buffer + view_as<Address>(8), NumberType_Int32) != 4096 * 8
-        || LoadFromAddress(buffer + view_as<Address>(16), NumberType_Int8)
-        || LoadFromAddress(buffer + view_as<Address>(12), NumberType_Int32) != 0)
+    if (g_Faulted || g_InfosOwned || g_InfosPending || !MemorySpan(buffer, g_Buffer.readSize, true) || !MemorySpan(table, g_Table.readSize)
+        || LoadFromAddress(buffer + view_as<Address>(g_Buffer.bytes), NumberType_Int32) != g_Layout.tableBufferBytes
+        || LoadFromAddress(buffer + view_as<Address>(g_Buffer.bits), NumberType_Int32) != g_Layout.tableBufferBytes * 8
+        || LoadFromAddress(buffer + view_as<Address>(g_Buffer.overflow), NumberType_Int8)
+        || LoadFromAddress(buffer + view_as<Address>(g_Buffer.cursor), NumberType_Int32) != 0)
     {
         LatchFault("Unexpected/nested cache table writer");
         DHookSetReturn(result, false); return MRES_Supercede;
     }
     g_InfosBuffer = buffer; g_InfosTable = table; g_InfosOwned = true; g_InfosBits = 0; g_Cut = 0;
-    StoreToAddress(buffer, view_as<int>(g_Scratch), NumberType_Int32);
-    StoreToAddress(buffer + view_as<Address>(4), g_Layout.scratchBytes, NumberType_Int32);
-    StoreToAddress(buffer + view_as<Address>(8), WIRE_MAX_BITS, NumberType_Int32);
+    StoreToAddress(buffer + view_as<Address>(g_Buffer.data), view_as<int>(g_Scratch), NumberType_Int32);
+    StoreToAddress(buffer + view_as<Address>(g_Buffer.bytes), g_Layout.scratchBytes, NumberType_Int32);
+    StoreToAddress(buffer + view_as<Address>(g_Buffer.bits), WIRE_MAX_BITS, NumberType_Int32);
     g_Expanded++;
     return MRES_Ignored;
 }
@@ -277,13 +279,13 @@ public MRESReturn AfterWriteInfos(Handle result, Handle params)
     if (buffer != g_InfosBuffer || table != g_InfosTable)
     { LatchFault("WriteInfos pre/post ownership mismatch"); return MRES_Ignored; }
     g_InfosOwned = false;
-    int bits = LoadFromAddress(buffer + view_as<Address>(12), NumberType_Int32);
+    int bits = LoadFromAddress(buffer + view_as<Address>(g_Buffer.cursor), NumberType_Int32);
     g_Cut = 0;
     g_TableCount++;
     if (bits > g_MaxBits) g_MaxBits = bits;
-    if (g_Faulted || !DHookGetReturn(result) || LoadFromAddress(buffer + view_as<Address>(16), NumberType_Int8)
+    if (g_Faulted || !DHookGetReturn(result) || LoadFromAddress(buffer + view_as<Address>(g_Buffer.overflow), NumberType_Int8)
         || bits <= 0 || bits > WIRE_MAX_BITS
-        || view_as<Address>(LoadFromAddress(buffer, NumberType_Int32)) != g_Scratch)
+        || view_as<Address>(LoadFromAddress(buffer + view_as<Address>(g_Buffer.data), NumberType_Int32)) != g_Scratch)
     {
         LatchFault("Table serialization failed or scratch ownership changed");
         DHookSetReturn(result, false); return MRES_Override;
@@ -291,7 +293,7 @@ public MRESReturn AfterWriteInfos(Handle result, Handle params)
     g_InfosBits = bits;
     g_InfosPending = true;
     char tableName[128];
-    ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), tableName, sizeof(tableName));
+    ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.name), NumberType_Int32)), tableName, sizeof(tableName));
     int used;
     if (g_UsedPadding.GetValue(tableName, used)) LatchFault("Real table collides with a framing padding name");
     g_RealTableNames.SetValue(tableName, 1);
@@ -341,20 +343,20 @@ void SetBits(int &position, int value, int count)
 
 int FindCut(Address table, int length)
 {
-    if (!MemorySpan(table, 12)) return 0;
-    char name[256]; ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), name, sizeof(name));
+    if (!MemorySpan(table, g_Table.readSize)) return 0;
+    char name[256]; ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.name), NumberType_Int32)), name, sizeof(name));
     if (g_Faulted) return 0;
     int position = (strlen(name) + 1) * 8 + 10, best, bestDistance = 0x7FFFFFFF;
-    Address properties = view_as<Address>(LoadFromAddress(table, NumberType_Int32));
-    int count = LoadFromAddress(table + view_as<Address>(4), NumberType_Int32);
-    if (count < 0 || count > 4096 || (count && !MemorySpan(properties, count * 84))) return 0;
+    Address properties = view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.props), NumberType_Int32));
+    int count = LoadFromAddress(table + view_as<Address>(g_Table.count), NumberType_Int32);
+    if (count < 0 || count > 4096 || (count && !MemorySpan(properties, count * g_Prop.size))) return 0;
     for (int i = 0; i < count; i++)
     {
-        Address prop = properties + view_as<Address>(i * 84);
-        int type = LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32);
-        int flags = LoadFromAddress(prop + view_as<Address>(60), NumberType_Int32);
+        Address prop = properties + view_as<Address>(i * g_Prop.size);
+        int type = LoadFromAddress(prop + view_as<Address>(g_Prop.type), NumberType_Int32);
+        int flags = LoadFromAddress(prop + view_as<Address>(g_Prop.flags), NumberType_Int32);
         if (type < 0 || type > 6) return 0;
-        ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(48), NumberType_Int32)), name, sizeof(name));
+        ReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(g_Prop.name), NumberType_Int32)), name, sizeof(name));
         position += 5 + (strlen(name) + 1) * 8 + 19 + 8;
         if (g_Faulted || position > length) return 0;
         if (type == 0 && !(flags & 0x40) && position <= 32767 && length - position - 23 > 0 && length - position - 23 <= 32767)
@@ -389,19 +391,19 @@ MRESReturn MessageBefore(Address message, Address output, Handle result)
     if (!g_CacheBuilding) return MRES_Ignored;
     int lengthOffset = g_Layout.messageLengthOffset;
     int dataOffset = g_Layout.messageDataOffset;
-    if (g_Faulted || g_Message != Address_Null || !MemorySpan(message, lengthOffset + 4, true) || !MemorySpan(output, 20, true))
+    if (g_Faulted || g_Message != Address_Null || !MemorySpan(message, lengthOffset + 4, true) || !MemorySpan(output, g_Buffer.readSize, true))
     { LatchFault("Invalid/nested SendTable message context"); DHookSetReturn(result, false); return MRES_Supercede; }
     int bits = LoadFromAddress(message + view_as<Address>(lengthOffset), NumberType_Int32);
-    int cursor = LoadFromAddress(output + view_as<Address>(12), NumberType_Int32);
-    int capacity = LoadFromAddress(output + view_as<Address>(8), NumberType_Int32);
-    int bytes = LoadFromAddress(output + view_as<Address>(4), NumberType_Int32);
-    Address outputData = view_as<Address>(LoadFromAddress(output, NumberType_Int32));
+    int cursor = LoadFromAddress(output + view_as<Address>(g_Buffer.cursor), NumberType_Int32);
+    int capacity = LoadFromAddress(output + view_as<Address>(g_Buffer.bits), NumberType_Int32);
+    int bytes = LoadFromAddress(output + view_as<Address>(g_Buffer.bytes), NumberType_Int32);
+    Address outputData = view_as<Address>(LoadFromAddress(output + view_as<Address>(g_Buffer.data), NumberType_Int32));
     Address data = view_as<Address>(LoadFromAddress(message + view_as<Address>(dataOffset), NumberType_Int32));
     if (bits < 0 || bits > WIRE_MAX_BITS || (bits && (!g_InfosPending || bits != g_InfosBits || data != g_Scratch))
-        || bytes <= 0 || bytes > 228000 || capacity <= 0 || capacity > bytes * 8
+        || bytes <= 0 || bytes > g_Layout.cacheBytes || capacity <= 0 || capacity > bytes * 8
         || !MemorySpan(outputData, bytes, true)
         || cursor < 0 || capacity < cursor || bits + 23 > capacity - cursor
-        || LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+        || LoadFromAddress(output + view_as<Address>(g_Buffer.overflow), NumberType_Int8))
     { LatchFault("SendTable payload/output does not match validated serialization"); DHookSetReturn(result, false); return MRES_Supercede; }
     g_Message = message; g_MessageOutput = output; g_MessageBits = bits; g_MessageStart = cursor;
     if (bits) g_InfosPending = false;
@@ -433,11 +435,11 @@ MRESReturn MessageAfter(Address message, Address output, Handle result)
     g_SavedLength = 0; g_Message = Address_Null;
     int lengthOffset = g_Layout.messageLengthOffset;
     if (framed) StoreToAddress(message + view_as<Address>(lengthOffset), bits, NumberType_Int32);
-    if (g_Faulted || output != g_MessageOutput || !DHookGetReturn(result) || LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+    if (g_Faulted || output != g_MessageOutput || !DHookGetReturn(result) || LoadFromAddress(output + view_as<Address>(g_Buffer.overflow), NumberType_Int8))
     { LatchFault("Original message writer failed; no tail appended"); DHookSetReturn(result, false); return MRES_Override; }
     if (!framed)
     {
-        if (LoadFromAddress(output + view_as<Address>(12), NumberType_Int32) != g_MessageStart + bits + 23)
+        if (LoadFromAddress(output + view_as<Address>(g_Buffer.cursor), NumberType_Int32) != g_MessageStart + bits + 23)
         { LatchFault("Short message output length mismatch"); DHookSetReturn(result, false); return MRES_Override; }
         if (bits) g_GenerationMessages++;
         return MRES_Ignored;
@@ -459,15 +461,15 @@ MRESReturn MessageAfter(Address message, Address output, Handle result)
         {
             SDKCall(g_WriteUnsigned, output, byte >>> (position % 8), prefix, 1);
         }
-        if (LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+        if (LoadFromAddress(output + view_as<Address>(g_Buffer.overflow), NumberType_Int8))
         { LatchFault("Framing prefix overflow"); DHookSetReturn(result, false); return MRES_Override; }
         position += prefix; remaining -= prefix;
     }
     bool okay = SDKCall(g_WriteBits, output, g_Scratch + view_as<Address>(position / 8), remaining);
-    if (!okay || LoadFromAddress(output + view_as<Address>(16), NumberType_Int8))
+    if (!okay || LoadFromAddress(output + view_as<Address>(g_Buffer.overflow), NumberType_Int8))
     { LatchFault("Framing tail write failed"); DHookSetReturn(result, false); return MRES_Override; }
     g_SplitCount++;
-    if (LoadFromAddress(output + view_as<Address>(12), NumberType_Int32) != g_MessageStart + bits + 23)
+    if (LoadFromAddress(output + view_as<Address>(g_Buffer.cursor), NumberType_Int32) != g_MessageStart + bits + 23)
     { LatchFault("Framed message output length mismatch"); DHookSetReturn(result, false); return MRES_Override; }
     g_GenerationMessages++;
     return MRES_Ignored;
@@ -492,7 +494,7 @@ public Action Cmd_Dump(int args)
 {
     int bits; Address data;
     int rawBits = LoadFromAddress(g_Layout.cacheBits, NumberType_Int32);
-    if (!CacheValid(bits, data) || data == Address_Null || bits != rawBits || bits <= 0 || bits > 228000 * 8)
+    if (!CacheValid(bits, data) || data == Address_Null || bits != rawBits || bits <= 0 || bits > g_Layout.cacheBytes * 8)
     { PrintToServer("[ammo-repair] no valid cache"); return Plugin_Handled; }
     char path[PLATFORM_MAX_PATH];
     BuildPath(Path_SM, path, sizeof(path), "data/ammo_digits_sendtables.bin");
@@ -522,7 +524,7 @@ public void OnPluginEnd()
     }
     if (!g_Patched && g_PatchApplied && g_AmmoProps != Address_Null)
     {
-        for (int i = 0; i < g_PatchApplied; i++) StoreToAddress(g_AmmoProps + view_as<Address>(i * 84 + 12), g_OriginalBits[i], NumberType_Int32);
+        for (int i = 0; i < g_PatchApplied; i++) StoreToAddress(g_AmmoProps + view_as<Address>(i * g_Prop.size + g_Prop.bits), g_OriginalBits[i], NumberType_Int32);
     }
     // Existing unload policy retained: lifetime ownership fixes are deferred by the user.
     if (!g_IsLinux && g_Scratch != Address_Null && g_Free != null) SDKCall(g_Free, g_Scratch);

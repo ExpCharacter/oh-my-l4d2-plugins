@@ -23,6 +23,52 @@ int g_InfosBits;
 int g_Regions[2048][4], g_RegionCount;
 int g_CRC32[256];
 
+enum struct PropLayout
+{
+    int size;
+    int type;
+    int bits;
+    int low;
+    int high;
+    int elements;
+    int exclude;
+    int name;
+    int priority;
+    int flags;
+    int table;
+}
+PropLayout g_Prop;
+
+enum struct TableLayout
+{
+    int readSize;
+    int props;
+    int count;
+    int name;
+}
+TableLayout g_Table;
+
+enum struct ClassLayout
+{
+    int readSize;
+    int name;
+    int table;
+    int next;
+    int id;
+}
+ClassLayout g_Class;
+
+enum struct BufferLayout
+{
+    int readSize;
+    int data;
+    int bytes;
+    int bits;
+    int cursor;
+    int overflow;
+}
+BufferLayout g_Buffer;
+
 bool UnsignedLE(int a, int b) { return (a ^ 0x80000000) <= (b ^ 0x80000000); }
 
 int GuardHex(char ch)
@@ -59,6 +105,13 @@ void InitCRC32()
 
 #include "ammo_linux_resolve.inc"
 
+Address RequiredSignature(const char[] key)
+{
+    Address address = g_Conf.GetMemSig(key);
+    if (address == Address_Null) SetFailState("Missing signature: %s", key);
+    return address;
+}
+
 Address RequiredAddress(const char[] key)
 {
     Address address = g_Conf.GetAddress(key);
@@ -74,9 +127,40 @@ Address CallTarget(Address call)
 
 void ResolvePlatform()
 {
-    g_ServerFactoryAddr = RequiredAddress("ServerFactoryAddr");
-    g_WriteInfosAddr = RequiredAddress("WriteInfosAddr");
+    g_ServerFactoryAddr = RequiredSignature("ServerFactory");
+    g_WriteInfosAddr = RequiredSignature("EngineWriteInfos");
+    g_Prop.size = g_Conf.GetOffset("SendProp.Size");
+    g_Prop.type = g_Conf.GetOffset("SendProp.Type");
+    g_Prop.bits = g_Conf.GetOffset("SendProp.Bits");
+    g_Prop.low = g_Conf.GetOffset("SendProp.Low");
+    g_Prop.high = g_Conf.GetOffset("SendProp.High");
+    g_Prop.elements = g_Conf.GetOffset("SendProp.Elements");
+    g_Prop.exclude = g_Conf.GetOffset("SendProp.Exclude");
+    g_Prop.name = g_Conf.GetOffset("SendProp.Name");
+    g_Prop.priority = g_Conf.GetOffset("SendProp.Priority");
+    g_Prop.flags = g_Conf.GetOffset("SendProp.Flags");
+    g_Prop.table = g_Conf.GetOffset("SendProp.Table");
+
+    g_Table.readSize = g_Conf.GetOffset("SendTable.ReadSize");
+    g_Table.props = g_Conf.GetOffset("SendTable.Props");
+    g_Table.count = g_Conf.GetOffset("SendTable.Count");
+    g_Table.name = g_Conf.GetOffset("SendTable.Name");
+
+    g_Class.readSize = g_Conf.GetOffset("ServerClass.ReadSize");
+    g_Class.name = g_Conf.GetOffset("ServerClass.Name");
+    g_Class.table = g_Conf.GetOffset("ServerClass.Table");
+    g_Class.next = g_Conf.GetOffset("ServerClass.Next");
+    g_Class.id = g_Conf.GetOffset("ServerClass.Id");
+
+    g_Buffer.readSize = g_Conf.GetOffset("BfWrite.ReadSize");
+    g_Buffer.data = g_Conf.GetOffset("BfWrite.Data");
+    g_Buffer.bytes = g_Conf.GetOffset("BfWrite.Bytes");
+    g_Buffer.bits = g_Conf.GetOffset("BfWrite.Bits");
+    g_Buffer.cursor = g_Conf.GetOffset("BfWrite.Cursor");
+    g_Buffer.overflow = g_Conf.GetOffset("BfWrite.Overflow");
+
     InitCRC32();
+    g_Layout.tableBufferBytes = g_Conf.GetOffset("SendTable.BufferBytes");
     if (g_IsLinux) ResolveLinux();
     else ResolveWindows();
     g_Resolved = true;
@@ -84,26 +168,27 @@ void ResolvePlatform()
 
 void ResolveWindows()
 {
-    g_BaselineAddr = RequiredAddress("EngineCreateBaselineAddr");
-    g_AdmissionAddr = RequiredAddress("EngineAdmissionAddr");
-    g_HltvAddr = RequiredAddress("EngineHltvAddr");
-    g_MessageAddr = RequiredAddress("EngineMessageAddr");
-    g_BitsAddr = RequiredAddress("EngineWriteBitsAddr");
-    g_UnsignedAddr = RequiredAddress("EngineWriteUnsignedAddr");
-    g_Layout.crc = RequiredAddress("EngineCrcGlobalAddr");
+    g_BaselineAddr = RequiredSignature("EngineCreateBaseline");
+    g_AdmissionAddr = RequiredSignature("EngineAdmission");
+    g_HltvAddr = RequiredSignature("EngineHltv");
+    g_MessageAddr = RequiredSignature("EngineMessage");
+    g_BitsAddr = RequiredSignature("EngineWriteBits");
+    g_UnsignedAddr = RequiredSignature("EngineWriteUnsigned");
+    g_Layout.crc = RequiredAddress("EngineCrcGlobal");
     // One bf_write instance holds the send-table buffer, its bit count and its
     // overflow flag; both samples expose the same bf_write field offsets.
-    Address buffer = RequiredAddress("SendTableBufferAddr");
-    g_Layout.cacheData = buffer;
-    g_Layout.cacheBits = buffer + view_as<Address>(12);
-    g_Layout.cacheOverflow = buffer + view_as<Address>(16);
-    g_Layout.messageLengthOffset = 140;
-    g_Layout.messageDataOffset = 128;
+    Address buffer = RequiredAddress("EngineTableBuffer");
+    g_Layout.cacheData = buffer + view_as<Address>(g_Buffer.data);
+    g_Layout.cacheBits = buffer + view_as<Address>(g_Buffer.cursor);
+    g_Layout.cacheOverflow = buffer + view_as<Address>(g_Buffer.overflow);
+    g_Layout.messageLengthOffset = view_as<int>(RequiredAddress("SendTable.MessageLengthOffset"));
+    g_Layout.messageDataOffset = view_as<int>(RequiredAddress("SendTable.MessageDataOffset"));
+    g_Layout.cacheBytes = view_as<int>(RequiredAddress("EngineCacheBytes"));
     g_Layout.scratchBytes = SCRATCH_BYTES;
     // The scratch allocator and its release are the pair CreateBaseline uses
-    // around the 228000-byte send-table write.
-    g_AllocAddr = CallTarget(RequiredAddress("ScratchAllocCallAddr"));
-    g_FreeAddr = CallTarget(RequiredAddress("ScratchFreeCallAddr"));
+    // around the send-table cache write.
+    g_AllocAddr = CallTarget(RequiredSignature("EngineScratchAllocCall"));
+    g_FreeAddr = CallTarget(RequiredAddress("EngineScratchFreeCall"));
 }
 
 bool RefreshRegions()
@@ -146,7 +231,7 @@ void InitMemoryChecks()
     // On Win32, SDKCall_Raw uses thiscall: stack arguments and callee cleanup
     // match stdcall. These APIs ignore ECX, but SourceMod rejects a null
     // receiver, so the scratch block is passed as the dummy.
-    Address getModule = RequiredAddress("GetModuleHandleCallAddr");
+    Address getModule = RequiredAddress("EngineGetModuleHandleCall");
     StartPrepSDKCall(SDKCall_Raw); PrepSDKCall_SetAddress(getModule);
     PrepSDKCall_AddParameter(SDKType_String, SDKPass_Pointer);
     PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
@@ -155,7 +240,7 @@ void InitMemoryChecks()
     Address kernel = view_as<Address>(SDKCall(moduleCall, g_Scratch, "kernel32.dll"));
     delete moduleCall;
     if (kernel == Address_Null) SetFailState("kernel32 is not loaded");
-    Address getProc = RequiredAddress("GetProcAddressCallAddr");
+    Address getProc = RequiredAddress("EngineGetProcAddressCall");
     StartPrepSDKCall(SDKCall_Raw); PrepSDKCall_SetAddress(getProc);
     PrepSDKCall_AddParameter(SDKType_PlainOldData, SDKPass_Plain);
     PrepSDKCall_AddParameter(SDKType_String, SDKPass_Pointer);
@@ -242,19 +327,19 @@ bool TryReadString(Address address, char[] value, int maxlength)
 
 void WalkSchema(Address table, int depth, StringMap visited)
 {
-    if (depth > 32 || !MemorySpan(table, 12)) SetFailState("Unreadable/deep SendTable hierarchy");
+    if (depth > 32 || !MemorySpan(table, g_Table.readSize)) SetFailState("Unreadable/deep SendTable hierarchy");
     char key[16], name[128]; int unused;
     FormatEx(key, sizeof(key), "%08x", table);
     if (visited.GetValue(key, unused)) return;
     visited.SetValue(key, 1);
     if (++g_ExpectedTables > 2048) SetFailState("Too many SendTables");
-    ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), name, sizeof(name));
+    ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.name), NumberType_Int32)), name, sizeof(name));
     int other;
     if (g_SchemaByName.GetValue(name, other) && other != view_as<int>(table)) SetFailState("Ambiguous SendTable name: %s", name);
     g_SchemaByName.SetValue(name, view_as<int>(table));
-    int count = LoadFromAddress(table + view_as<Address>(4), NumberType_Int32);
-    Address props = view_as<Address>(LoadFromAddress(table, NumberType_Int32));
-    if (count < 0 || count > 1023 || (count && !MemorySpan(props, count * 84))) SetFailState("Invalid SendTable properties: %s", name);
+    int count = LoadFromAddress(table + view_as<Address>(g_Table.count), NumberType_Int32);
+    Address props = view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.props), NumberType_Int32));
+    if (count < 0 || count > 1023 || (count && !MemorySpan(props, count * g_Prop.size))) SetFailState("Invalid SendTable properties: %s", name);
     if (StrEqual(name, "m_iAmmo"))
     {
         if (count != 32) SetFailState("Unexpected m_iAmmo element count");
@@ -262,17 +347,17 @@ void WalkSchema(Address table, int depth, StringMap visited)
     }
     for (int i = 0; i < count; i++)
     {
-        Address prop = props + view_as<Address>(i * 84);
-        int type = LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32);
+        Address prop = props + view_as<Address>(i * g_Prop.size);
+        int type = LoadFromAddress(prop + view_as<Address>(g_Prop.type), NumberType_Int32);
         if (type < 0 || type > 6) SetFailState("Unknown SendProp type");
-        if (type == 6) WalkSchema(view_as<Address>(LoadFromAddress(prop + view_as<Address>(72), NumberType_Int32)), depth + 1, visited);
+        if (type == 6) WalkSchema(view_as<Address>(LoadFromAddress(prop + view_as<Address>(g_Prop.table), NumberType_Int32)), depth + 1, visited);
     }
 }
 
 void ResolveLiveSchema()
 {
     // Obtain the server interface from its actual loaded factory, then call
-    // GetAllServerClasses (slot 10 of ServerGameDLL005 on both samples).
+    // GetAllServerClasses using the interface and slot from gamedata.
     StartPrepSDKCall(SDKCall_Static);
     PrepSDKCall_SetAddress(g_ServerFactoryAddr);
     PrepSDKCall_AddParameter(SDKType_String, SDKPass_Pointer);
@@ -280,9 +365,11 @@ void ResolveLiveSchema()
     PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
     Handle factory = EndPrepSDKCall();
     if (factory == null) SetFailState("Cannot prepare server interface factory");
-    Address serverInterface = view_as<Address>(SDKCall(factory, "ServerGameDLL005", 0)); delete factory;
-    if (!MemorySpan(serverInterface, 4)) SetFailState("ServerGameDLL005 interface unavailable");
-    StartPrepSDKCall(SDKCall_Raw); PrepSDKCall_SetVirtual(10);
+    char interfaceName[64];
+    g_Conf.GetKeyValue("ServerGameDLL.Interface", interfaceName, sizeof(interfaceName));
+    Address serverInterface = view_as<Address>(SDKCall(factory, interfaceName, 0)); delete factory;
+    if (!MemorySpan(serverInterface, 4)) SetFailState("ServerGameDLL interface unavailable");
+    StartPrepSDKCall(SDKCall_Raw); PrepSDKCall_SetVirtual(g_Conf.GetOffset("ServerGameDLL.GetAllServerClasses"));
     PrepSDKCall_SetReturnInfo(SDKType_PlainOldData, SDKPass_Plain);
     Handle getClasses = EndPrepSDKCall();
     if (getClasses == null) SetFailState("Cannot prepare GetAllServerClasses");
@@ -292,16 +379,16 @@ void ResolveLiveSchema()
     StringMap visited = new StringMap();
     while (node != Address_Null)
     {
-        if (++g_ExpectedClasses > 1024 || !MemorySpan(node, 16)) SetFailState("Invalid/cyclic ServerClass list");
+        if (++g_ExpectedClasses > 1024 || !MemorySpan(node, g_Class.readSize)) SetFailState("Invalid/cyclic ServerClass list");
         char className[128], tableName[128];
-        ReadString(view_as<Address>(LoadFromAddress(node, NumberType_Int32)), className, sizeof(className));
-        Address table = view_as<Address>(LoadFromAddress(node + view_as<Address>(4), NumberType_Int32));
+        ReadString(view_as<Address>(LoadFromAddress(node + view_as<Address>(g_Class.name), NumberType_Int32)), className, sizeof(className));
+        Address table = view_as<Address>(LoadFromAddress(node + view_as<Address>(g_Class.table), NumberType_Int32));
         WalkSchema(table, 0, visited);
-        ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(8), NumberType_Int32)), tableName, sizeof(tableName));
+        ReadString(view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.name), NumberType_Int32)), tableName, sizeof(tableName));
         if (g_ClassTables.ContainsKey(className)) SetFailState("Duplicate ServerClass name");
         g_ClassTables.SetString(className, tableName);
         g_ClassNodes.SetValue(className, view_as<int>(node)); g_RootTables.SetValue(tableName, 1);
-        node = view_as<Address>(LoadFromAddress(node + view_as<Address>(8), NumberType_Int32));
+        node = view_as<Address>(LoadFromAddress(node + view_as<Address>(g_Class.next), NumberType_Int32));
     }
     delete visited;
     if (!g_ExpectedClasses || g_AmmoProps == Address_Null) SetFailState("m_iAmmo absent from live registered schema");
@@ -313,7 +400,7 @@ bool CacheState(int &bits, Address &data)
     bits = LoadFromAddress(g_Layout.cacheBits, NumberType_Int32);
     data = view_as<Address>(LoadFromAddress(g_Layout.cacheData, NumberType_Int32));
     int overflow = LoadFromAddress(g_Layout.cacheOverflow, NumberType_Int8);
-    return !overflow && bits > 0 && bits <= 228000 * 8 && MemorySpan(data, (bits + 7) / 8);
+    return !overflow && bits > 0 && bits <= g_Layout.cacheBytes * 8 && MemorySpan(data, (bits + 7) / 8);
 }
 
 int CacheDigest(Address data, int bits)
@@ -355,11 +442,11 @@ bool PropertyReferenceAddress(Address prop, int type, Address &text)
 {
     if (type == 6)
     {
-        Address child = view_as<Address>(LoadFromAddress(prop + view_as<Address>(72), NumberType_Int32));
-        if (!MemorySpan(child, 12)) return false;
-        text = view_as<Address>(LoadFromAddress(child + view_as<Address>(8), NumberType_Int32));
+        Address child = view_as<Address>(LoadFromAddress(prop + view_as<Address>(g_Prop.table), NumberType_Int32));
+        if (!MemorySpan(child, g_Table.readSize)) return false;
+        text = view_as<Address>(LoadFromAddress(child + view_as<Address>(g_Table.name), NumberType_Int32));
     }
-    else text = view_as<Address>(LoadFromAddress(prop + view_as<Address>(40), NumberType_Int32));
+    else text = view_as<Address>(LoadFromAddress(prop + view_as<Address>(g_Prop.exclude), NumberType_Int32));
     return true;
 }
 
@@ -395,8 +482,8 @@ bool ParseCacheBody(Address data, int bits, StringMap seen, StringMap classes, S
                     || !WireString(data, bits, pos, childName, sizeof(childName))
                     || !g_ClassTables.GetString(name, actual, sizeof(actual)) || !StrEqual(actual, childName)
                     || classes.ContainsKey(name) || !g_ClassNodes.GetValue(name, classNode)
-                    || !MemorySpan(view_as<Address>(classNode), 16)
-                    || id != LoadFromAddress(view_as<Address>(classNode) + view_as<Address>(12), NumberType_Int32)) return false;
+                    || !MemorySpan(view_as<Address>(classNode), g_Class.readSize)
+                    || id != LoadFromAddress(view_as<Address>(classNode) + view_as<Address>(g_Class.id), NumberType_Int32)) return false;
                 FormatEx(key, sizeof(key), "%d", id);
                 if (ids.ContainsKey(key)) return false;
                 ids.SetValue(key, 1); classes.SetValue(name, 1);
@@ -420,21 +507,21 @@ bool ParseCacheBody(Address data, int bits, StringMap seen, StringMap classes, S
         if (pendingEnd || seen.ContainsKey(name) || view_as<bool>(decoder) != g_RootTables.ContainsKey(name)) return false;
         seen.SetValue(name, 1); tables++;
         Address table = view_as<Address>(address);
-        if (!MemorySpan(table, 12) || LoadFromAddress(table + view_as<Address>(4), NumberType_Int32) != count) return false;
-        Address props = view_as<Address>(LoadFromAddress(table, NumberType_Int32));
-        if (count && !MemorySpan(props, count * 84)) return false;
+        if (!MemorySpan(table, g_Table.readSize) || LoadFromAddress(table + view_as<Address>(g_Table.count), NumberType_Int32) != count) return false;
+        Address props = view_as<Address>(LoadFromAddress(table + view_as<Address>(g_Table.props), NumberType_Int32));
+        if (count && !MemorySpan(props, count * g_Prop.size)) return false;
         bool ammo = StrEqual(name, "m_iAmmo");
         if (ammo && count != 32) return false;
         for (int i = 0; i < count; i++)
         {
             int type, flags;
-            Address prop = props + view_as<Address>(i * 84);
+            Address prop = props + view_as<Address>(i * g_Prop.size);
             if (!WireRead(data, bits, pos, 5, type) || !WireString(data, bits, pos, propName, sizeof(propName))
                 || !WireRead(data, bits, pos, 19, flags) || !WireRead(data, bits, pos, 8, value)
-                || type != LoadFromAddress(prop + view_as<Address>(8), NumberType_Int32)
-                || flags != (LoadFromAddress(prop + view_as<Address>(60), NumberType_Int32) & 0x7FFFF)
-                || value != LoadFromAddress(prop + view_as<Address>(56), NumberType_Int8)
-                || !TryReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(48), NumberType_Int32)), actual, sizeof(actual))
+                || type != LoadFromAddress(prop + view_as<Address>(g_Prop.type), NumberType_Int32)
+                || flags != (LoadFromAddress(prop + view_as<Address>(g_Prop.flags), NumberType_Int32) & 0x7FFFF)
+                || value != LoadFromAddress(prop + view_as<Address>(g_Prop.priority), NumberType_Int8)
+                || !TryReadString(view_as<Address>(LoadFromAddress(prop + view_as<Address>(g_Prop.name), NumberType_Int32)), actual, sizeof(actual))
                 || !StrEqual(propName, actual)) return false;
             if (type == 6 || (flags & 0x40))
             {
@@ -446,17 +533,17 @@ bool ParseCacheBody(Address data, int bits, StringMap seen, StringMap classes, S
             else if (type == 5)
             {
                 if (!WireRead(data, bits, pos, 10, value)
-                    || value != LoadFromAddress(prop + view_as<Address>(32), NumberType_Int32)) return false;
+                    || value != LoadFromAddress(prop + view_as<Address>(g_Prop.elements), NumberType_Int32)) return false;
             }
             else
             {
                 bool framingBounds = type == 0 && pos == declaredEnd;
                 if (!WireRead(data, bits, pos, 32, value)
-                    || (!framingBounds && value != LoadFromAddress(prop + view_as<Address>(16), NumberType_Int32))
+                    || (!framingBounds && value != LoadFromAddress(prop + view_as<Address>(g_Prop.low), NumberType_Int32))
                     || !WireRead(data, bits, pos, 32, value)
-                    || (!framingBounds && value != LoadFromAddress(prop + view_as<Address>(20), NumberType_Int32))
+                    || (!framingBounds && value != LoadFromAddress(prop + view_as<Address>(g_Prop.high), NumberType_Int32))
                     || !WireRead(data, bits, pos, 6, value)
-                    || value != (LoadFromAddress(prop + view_as<Address>(12), NumberType_Int32) & 63)) return false;
+                    || value != (LoadFromAddress(prop + view_as<Address>(g_Prop.bits), NumberType_Int32) & 63)) return false;
                 if (ammo && (type || !(flags & 1) || value != 16)) return false;
             }
         }
@@ -475,11 +562,11 @@ bool CacheSummaryMatches(int &bits, Address &data)
     return CacheState(bits, data) && bits == g_CacheBits && CacheDigest(data, bits) == g_CacheDigest;
 }
 
-// Callers must have verified MemorySpan(g_AmmoProps, 32 * 84) first.
+// Callers must have verified MemorySpan(g_AmmoProps, 32 * g_Prop.size) first.
 bool AmmoElementsAre16Bit()
 {
     for (int i = 0; i < 32; i++)
-        if (LoadFromAddress(g_AmmoProps + view_as<Address>(i * 84 + 12), NumberType_Int32) != 16) return false;
+        if (LoadFromAddress(g_AmmoProps + view_as<Address>(i * g_Prop.size + g_Prop.bits), NumberType_Int32) != 16) return false;
     return true;
 }
 
@@ -490,7 +577,7 @@ bool CacheValid(int &bits, Address &data)
     if (!g_CacheReady || g_Faulted || g_CacheBuilding || g_SendTables == null) return false;
     if (!g_SendTables.BoolValue) return false;
     if (!CacheSummaryMatches(bits, data)) return false;
-    if (!MemorySpan(g_AmmoProps, 32 * 84)) return false;
+    if (!MemorySpan(g_AmmoProps, 32 * g_Prop.size)) return false;
     if (!AmmoElementsAre16Bit()) return false;
     return true;
 }
@@ -594,7 +681,7 @@ bool ReadyForSignonWindows()
     { LatchFault("Published cache changed outside a validated generation"); return false; }
     int crc = LoadFromAddress(g_Layout.crc, NumberType_Int32);
     if (crc != 0x5EEDBEEF) { LatchFault("SendTable CRC drift"); return false; }
-    if (!MemorySpan(g_AmmoProps, 32 * 84)) { LatchFault("Ammo schema mapping lost"); return false; }
+    if (!MemorySpan(g_AmmoProps, 32 * g_Prop.size)) { LatchFault("Ammo schema mapping lost"); return false; }
     if (!AmmoElementsAre16Bit()) { LatchFault("Ammo schema drift"); return false; }
     return true;
 }
