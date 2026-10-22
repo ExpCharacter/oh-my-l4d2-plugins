@@ -23,7 +23,7 @@
 #include <sdktools>
 #include <dhooks>
 
-#define VERSION "1.10.7"
+#define VERSION "1.10.8"
 #define GAMEDATA "l4d2_team_airaccelerate"
 #define GAMEDATA_FUNC "l4d2_team_airaccelerate::CGameMovement::AirAccelerate"
 #define CVAR_PREFIX "l4d2_airaccelerate_"
@@ -66,6 +66,9 @@ StringMap g_hRun[2]; // 0 = 生还者，1 = 特感
 char g_sSteamId[MAXPLAYERS + 1][20];
 bool g_bHasSteamId[MAXPLAYERS + 1], g_bSyncValid[MAXPLAYERS + 1], g_bResyncPending;
 float g_fSyncValue[MAXPLAYERS + 1], g_fLogLast[MAXPLAYERS + 1];
+// sm_aa 改过的值在换图后重放；只有插件重载/服务器重启才回到 cfg。
+bool g_bRuntimeSet[sizeof(g_cvSettings)];
+float g_fRuntimeValue[sizeof(g_cvSettings)];
 
 // 文案集中编辑，副本见 texts/PLAYER_TEXT.txt。
 #define TXT_USAGE "[SM] sm_aa <target> [value]"
@@ -132,6 +135,7 @@ public void OnConfigsExecuted() {
 		g_bOrderNewConfig = false;
 		OrderNewConfig();
 	}
+	ReapplyRuntimeSettings();
 	ResyncAllClients();
 }
 
@@ -270,6 +274,20 @@ void ResyncAllClients() {
 	for (int i = 1; i <= MaxClients; i++) SyncClientAirAccel(i, true);
 }
 
+void RecordRuntimeSetting(int key, float value) {
+	g_bRuntimeSet[key] = true;
+	g_fRuntimeValue[key] = value;
+}
+
+// cfg 在每次换图时重新执行；把 sm_aa 设过的值放回去，插件重载/重启才回到 cfg。
+void ReapplyRuntimeSettings() {
+	for (int i = 0; i < sizeof(g_cvSettings); i++) {
+		if (!g_bRuntimeSet[i]) continue;
+		if (i >= SETTING_ENABLE) g_cvSettings[i].SetInt(g_fRuntimeValue[i] != 0.0 ? 1 : 0);
+		else g_cvSettings[i].SetFloat(g_fRuntimeValue[i]);
+	}
+}
+
 bool Usable(float v) { return v >= 0.0 && v < 1.0e30; }
 
 bool ParseValue(const char[] raw, float &value) {
@@ -298,7 +316,10 @@ public Action Cmd_AirAccel(int client, int args) {
 	else if (np == 1 && StrEqual(parts[0], "clear", false)) {
 		int count = g_hRun[0].Size + g_hRun[1].Size;
 		for (int i = 0; i < 2; i++) g_hRun[i].Clear();
-		for (int i = 0; i < SETTING_ENABLE; i++) g_cvSettings[i].SetFloat(-1.0);
+		for (int i = 0; i < SETTING_ENABLE; i++) {
+			g_cvSettings[i].SetFloat(-1.0);
+			RecordRuntimeSetting(i, -1.0);
+		}
 		ResyncAllClients();
 		ReplyToCommand(client, TXT_CLEARED);
 		LogAction(client, -1, "清除所有自定义空速（玩家覆盖 %d 项，阵营及种类恢复继承）", count);
@@ -367,6 +388,7 @@ void SetValue(int client, int key, const char[] name, const char[] raw) {
 		}
 		bool on = StrEqual(raw, "1");
 		g_cvSettings[key].SetInt(on ? 1 : 0);
+		RecordRuntimeSetting(key, on ? 1.0 : 0.0);
 		ReplyToCommand(client, on ? TXT_TOGGLE_SET_ON : TXT_TOGGLE_SET_OFF,
 			key == SETTING_ENABLE ? TXT_NAME_ENABLE : TXT_NAME_DEBUG);
 	}
@@ -377,6 +399,7 @@ void SetValue(int client, int key, const char[] name, const char[] raw) {
 			return;
 		}
 		g_cvSettings[key].SetFloat(value);
+		RecordRuntimeSetting(key, value);
 		if (value < 0.0) ReplyToCommand(client, TXT_SET_GLOBAL, name);
 		else {
 			char text[32];
