@@ -628,7 +628,6 @@ bool PublishMarkerOnce(const char[] trigger)
         { LatchFault("SendTable CRC drift after publication"); return false; }
         return true;
     }
-    if (g_Faulted) return false;
     if (crc == 0x5EEDBEEF)
     {
         LogMessage("Ammo lifecycle: marker adopted plugin=%d map_epoch=%d generation=%d trigger=%s configs_seen=%d cache_digest=%08x",
@@ -650,23 +649,9 @@ bool PublishMarkerOnce(const char[] trigger)
     return true;
 }
 
-// Lightweight publication check, used only after full cache/schema validation
-// and successful publication in this same synchronous EnsureLinuxReady call.
-// Within a published cycle a changed CRC is drift; this never repairs it.
-bool PublishedMarkerReady()
-{
-    if (!g_MarkerPublished || g_PublishedEpoch != g_MapEpoch || g_PublishedGeneration != g_Generation)
-        return false;
-    if (LoadFromAddress(g_Layout.crc, NumberType_Int32) != 0x5EEDBEEF)
-    { LatchFault("SendTable CRC drift after publication"); return false; }
-    return true;
-}
-
 bool EnsureLinuxReady(const char[] trigger)
 {
-    if (g_Faulted || g_Closing) return false;
-    if (!PublishMarkerOnce(trigger)) return false;
-    return PublishedMarkerReady();
+    return PublishMarkerOnce(trigger);
 }
 
 // Windows admission is unchanged: one cache validation plus the marker that
@@ -714,6 +699,9 @@ public MRESReturn GuardLinuxAdmission(Handle result, Handle params)
 
 public bool OnClientConnect(int client, char[] rejectmsg, int maxlen)
 {
+    // A waiting instance installed nothing, so the client negotiates the stock
+    // protocol; there is no cache to check yet.
+    if (g_WaitForMap) return true;
     if (!g_IsLinux)
     {
         if (ReadyForSignonWindows()) return true;

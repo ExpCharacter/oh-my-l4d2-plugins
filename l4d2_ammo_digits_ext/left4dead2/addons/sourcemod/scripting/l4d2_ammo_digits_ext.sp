@@ -29,7 +29,14 @@
 #include <sourcemod>
 #include <sendtable>
 
-#define PLUGIN_VERSION "1.0.0"
+#define PLUGIN_VERSION "1.0.2"
+
+#define AMMO_CLASS        "CTerrorPlayer"
+#define AMMO_TABLE        "m_iAmmo"
+#define AMMO_BITS_VANILLA 10
+#define AMMO_BITS_TARGET  16
+
+bool g_WaitForMap;
 
 public Plugin myinfo =
 {
@@ -40,34 +47,62 @@ public Plugin myinfo =
 	url = "https://github.com/ExpCharacter/oh-my-l4d2-plugins"
 };
 
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int maxlength)
+{
+	g_WaitForMap = late;
+	return APLRes_Success;
+}
+
 public void OnPluginStart()
 {
 	RegServerCmd("sm_ammodigits_ext_status", Cmd_Status);
 
-	// Confogl unloads and reloads plugins per mode. The first load widens the
-	// schema; later loads must accept the already widened state, because
-	// expectedBits=10 would fail once the width is 16.
-	int bits = SendTable.GetBits("CTerrorPlayer", "m_iAmmo");
-	if (bits == 16)
+	if (g_WaitForMap)
 	{
-		LogMessage("m_iAmmo already 16 bits; patch from an earlier load is still active");
+		LogMessage("Late load: waiting for the next map initialization before widening %s", AMMO_TABLE);
 		return;
 	}
-	if (bits != 10)
-		SetFailState("m_iAmmo unexpected width %d (expected 10 or 16)", bits);
+
+	ApplyAmmoBits();
+}
+
+public void OnMapInit(const char[] mapName)
+{
+	// Unlike OnMapStart, this is not replayed when a plugin is hot-loaded.
+	if (!g_WaitForMap) return;
+	g_WaitForMap = false;
+	ApplyAmmoBits();
+}
+
+void ApplyAmmoBits()
+{
+	// Confogl can reload this plugin while the table is already widened.
+	int bits = SendTable.GetBits(AMMO_CLASS, AMMO_TABLE);
+	if (bits == -1)
+		SetFailState("%s.%s not found; the send table layout changed", AMMO_CLASS, AMMO_TABLE);
+
+	if (bits == AMMO_BITS_TARGET)
+	{
+		LogMessage("%s already %d bits; no change needed", AMMO_TABLE, bits);
+		return;
+	}
+
+	if (bits != AMMO_BITS_VANILLA)
+		SetFailState("%s is %d bits, expected %d (vanilla) or %d (widened)",
+			AMMO_TABLE, bits, AMMO_BITS_VANILLA, AMMO_BITS_TARGET);
 
 	// expectedBits guards against a game update changing the vanilla width:
 	// the call fails instead of widening an already different schema.
-	if (!SendTable.SetElementBits("CTerrorPlayer", "m_iAmmo", 16, 10))
-		SetFailState("m_iAmmo widen failed: class/prop missing or expectedBits mismatch");
+	if (!SendTable.SetElementBits(AMMO_CLASS, AMMO_TABLE, AMMO_BITS_TARGET, AMMO_BITS_VANILLA))
+		SetFailState("%s widen failed: class/prop missing or expectedBits mismatch", AMMO_TABLE);
 
-	LogMessage("m_iAmmo widened to 16 bits through sendtable.ext");
+	LogMessage("%s widened to %d bits through sendtable.ext", AMMO_TABLE, AMMO_BITS_TARGET);
 }
 
 public Action Cmd_Status(int args)
 {
 	#pragma unused args
-	int bits = SendTable.GetBits("CTerrorPlayer", "m_iAmmo");
-	PrintToServer("[ammo-ext] m_iAmmo bits=%d expected=16", bits);
+	int bits = SendTable.GetBits(AMMO_CLASS, AMMO_TABLE);
+	PrintToServer("[ammo-ext] %s bits=%d expected=%d waiting_for_map=%d", AMMO_TABLE, bits, AMMO_BITS_TARGET, g_WaitForMap);
 	return Plugin_Handled;
 }

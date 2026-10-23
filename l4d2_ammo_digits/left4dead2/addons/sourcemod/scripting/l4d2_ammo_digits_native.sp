@@ -16,7 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Startup-only native ammo transport candidate. Requires client acceptance testing.
+// Native ammo transport candidate.  A late load into a stock process installs at
+// the next map initialization; requires client acceptance testing.
 // Written with ChatGPT 6.1 sol high + deepseek flash.
 #pragma semicolon 1
 #pragma newdecls required
@@ -24,7 +25,7 @@
 #include <sdktools>
 #include <dhooks>
 
-#define PLUGIN_VERSION "0.4.1"
+#define PLUGIN_VERSION "0.4.2"
 #define SCRATCH_BYTES 8192
 #define LINUX_SCRATCH_BYTES 16384
 #define WIRE_MAX_BITS 65535
@@ -45,7 +46,7 @@ bool g_MessagePreHook, g_MessagePostHook;
 bool g_IsLinux;
 int g_PatchApplied;
 int g_OriginalBits[32];
-bool g_Late;
+bool g_Late, g_WaitForMap, g_WasWidened;
 
 // Shared native addresses, filled once by ResolvePlatform before any consumer.
 Address g_ServerFactoryAddr, g_WriteInfosAddr, g_AllocAddr;
@@ -81,10 +82,12 @@ public Plugin myinfo =
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int maxlength)
 {
     g_Late = late;
+    g_WaitForMap = late;
     // Confogl reloads plugins per mode (unload_all + shared_plugins.cfg) on both
-    // platforms.  A late load is safe only when the cache was already built with
-    // the widened schema; the signon guard verifies that cache and faults
-    // otherwise, so no startup-only rejection is needed here.
+    // platforms.  A late load into a process this plugin already widened installs
+    // at once and adopts the cache clients negotiated against; a late load into a
+    // stock process defers to the next map initialization instead of changing the
+    // protocol under clients that negotiated the stock tables.
     return APLRes_Success;
 }
 
@@ -108,6 +111,31 @@ void ReadString(Address address, char[] value, int maxlength)
 }
 
 public void OnPluginStart()
+{
+    RegServerCmd("sm_ammodigits_status", Cmd_Status);
+    RegServerCmd("sm_ammodigits_dump", Cmd_Dump);
+    PrepareTransport();
+    if (g_WaitForMap && !g_WasWidened)
+    {
+        LogMessage("Late load: waiting for the next map initialization before changing the ammo network protocol");
+        return;
+    }
+    g_WaitForMap = false;
+    InstallTransport();
+}
+
+public void OnMapInit(const char[] mapName)
+{
+    // OnMapStart is replayed to a late-loaded plugin; OnMapInit is not.
+    if (!g_WaitForMap) return;
+    g_WaitForMap = false;
+    // This instance has never seen a widened cache; the next baseline pass builds
+    // its own, so the previous stock cache must not be adopted.
+    g_Late = false;
+    InstallTransport();
+}
+
+void PrepareTransport()
 {
     if (GetEngineVersion() != Engine_Left4Dead2) SetFailState("L4D2 only");
     g_PluginId = view_as<int>(GetMyHandle());
@@ -156,6 +184,13 @@ public void OnPluginStart()
             SetFailState("Unexpected ammo element %d", i);
         g_OriginalBits[i] = LoadFromAddress(prop + view_as<Address>(g_Prop.bits), NumberType_Int32);
     }
+    // A previous instance in this process already widened the schema; installing
+    // now cannot contradict what connected clients negotiated.
+    g_WasWidened = (g_OriginalBits[0] == 16);
+}
+
+void InstallTransport()
+{
     g_WriteInfos = DHookCreateDetour(g_WriteInfosAddr, CallConv_CDECL, ReturnType_Bool, ThisPointer_Ignore);
     if (g_WriteInfos == null) SetFailState("Could not create WriteInfos detour");
     DHookAddParam(g_WriteInfos, HookParamType_Int);
@@ -210,8 +245,6 @@ public void OnPluginStart()
     g_Patched = true;
     g_SendTables.AddChangeHook(GuardSendTablesChanged);
     g_SendTables.BoolValue = true;
-    RegServerCmd("sm_ammodigits_status", Cmd_Status);
-    RegServerCmd("sm_ammodigits_dump", Cmd_Dump);
     LogMessage("CANDIDATE: 32 ammo elements changed to 16 bits; scratch and message framing enabled (platform=%s)",
         g_IsLinux ? "linux" : "windows");
 }
@@ -227,6 +260,9 @@ public void OnMapStart()
 
 public void OnConfigsExecuted()
 {
+    // A waiting instance must not advertise the widened marker for a cache it
+    // neither built nor validated.
+    if (g_WaitForMap) return;
     g_ConfigsObservations++;
     if (!g_ConfigsSeen)
     {
@@ -477,6 +513,8 @@ MRESReturn MessageAfter(Address message, Address output, Handle result)
 
 public Action Cmd_Status(int args)
 {
+    if (g_WaitForMap)
+    { PrintToServer("[ammo-native-candidate] waiting_for_map=1"); return Plugin_Handled; }
     int bits = LoadFromAddress(g_Layout.cacheBits, NumberType_Int32);
     int overflow = LoadFromAddress(g_Layout.cacheOverflow, NumberType_Int8);
     int crc = LoadFromAddress(g_Layout.crc, NumberType_Int32);
@@ -492,9 +530,10 @@ public Action Cmd_Status(int args)
 
 public Action Cmd_Dump(int args)
 {
+    if (g_WaitForMap)
+    { PrintToServer("[ammo-repair] waiting for the next map initialization"); return Plugin_Handled; }
     int bits; Address data;
-    int rawBits = LoadFromAddress(g_Layout.cacheBits, NumberType_Int32);
-    if (!CacheValid(bits, data) || data == Address_Null || bits != rawBits || bits <= 0 || bits > g_Layout.cacheBytes * 8)
+    if (!CacheValid(bits, data))
     { PrintToServer("[ammo-repair] no valid cache"); return Plugin_Handled; }
     char path[PLATFORM_MAX_PATH];
     BuildPath(Path_SM, path, sizeof(path), "data/ammo_digits_sendtables.bin");
