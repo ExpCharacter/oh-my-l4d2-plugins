@@ -1,5 +1,5 @@
 /*
- * l4d2_ammo_digits_native
+ * l4d2_ammo_display_fix
  * Copyright (C) 2026 ExpCharacter
  *
  * This program is free software: you can redistribute it and/or modify
@@ -72,7 +72,7 @@ PlatformLayout g_Layout;
 
 public Plugin myinfo =
 {
-    name = "L4D2 Ammo Digits Native Candidate",
+    name = "L4D2 Ammo Display Fix",
     author = "ExpCharacter",
     description = "Native ammo with framed full-table transport",
     version = PLUGIN_VERSION,
@@ -112,8 +112,8 @@ void ReadString(Address address, char[] value, int maxlength)
 
 public void OnPluginStart()
 {
-    RegServerCmd("sm_ammodigits_status", Cmd_Status);
-    RegServerCmd("sm_ammodigits_dump", Cmd_Dump);
+    RegServerCmd("sm_ammodisplay_status", Cmd_Status);
+    RegServerCmd("sm_ammodisplay_dump", Cmd_Dump);
     PrepareTransport();
     if (g_WaitForMap && !g_WasWidened)
     {
@@ -139,7 +139,7 @@ void PrepareTransport()
 {
     if (GetEngineVersion() != Engine_Left4Dead2) SetFailState("L4D2 only");
     g_PluginId = view_as<int>(GetMyHandle());
-    g_Conf = new GameData("l4d2_ammo_digits_native");
+    g_Conf = new GameData("l4d2_ammo_display_fix");
     if (g_Conf == null) SetFailState("Missing gamedata");
     g_IsLinux = (g_Conf.GetOffset("Linux32") == 1);
     if (!g_IsLinux && g_Conf.GetOffset("Windows32") != 1) SetFailState("Unsupported platform");
@@ -514,15 +514,15 @@ MRESReturn MessageAfter(Address message, Address output, Handle result)
 public Action Cmd_Status(int args)
 {
     if (g_WaitForMap)
-    { PrintToServer("[ammo-native-candidate] waiting_for_map=1"); return Plugin_Handled; }
+    { PrintToServer("[ammodisplay] waiting_for_map=1"); return Plugin_Handled; }
     int bits = LoadFromAddress(g_Layout.cacheBits, NumberType_Int32);
     int overflow = LoadFromAddress(g_Layout.cacheOverflow, NumberType_Int8);
     int crc = LoadFromAddress(g_Layout.crc, NumberType_Int32);
-    PrintToServer("[ammo-native-candidate] tables=%d expanded=%d split=%d maxbits=%d failures=%d cachebits=%d overflow=%d crc=%08x",
+    PrintToServer("[ammodisplay] tables=%d expanded=%d split=%d maxbits=%d failures=%d cachebits=%d overflow=%d crc=%08x",
         g_TableCount, g_Expanded, g_SplitCount, g_MaxBits, g_Failures, bits, overflow, crc);
-    PrintToServer("[ammo-guard] generation=%d building=%d ready=%d fault=%d digest=%08x reason=%s", g_Generation, g_CacheBuilding, g_CacheReady, g_Faulted, g_CacheDigest, g_FaultReason);
+    PrintToServer("[ammodisplay-guard] generation=%d building=%d ready=%d fault=%d digest=%08x reason=%s", g_Generation, g_CacheBuilding, g_CacheReady, g_Faulted, g_CacheDigest, g_FaultReason);
     if (g_IsLinux)
-        PrintToServer("[ammo-lifecycle] plugin=%d map_epoch=%d configs_seen=%d configs_observed=%d cache_validated=%d marker_published=%d published_epoch=%d published_generation=%d publish_writes=%d",
+        PrintToServer("[ammodisplay-lifecycle] plugin=%d map_epoch=%d configs_seen=%d configs_observed=%d cache_validated=%d marker_published=%d published_epoch=%d published_generation=%d publish_writes=%d",
             g_PluginId, g_MapEpoch, g_ConfigsSeen ? 1 : 0, g_ConfigsObservations, g_CacheReady ? 1 : 0,
             g_MarkerPublished ? 1 : 0, g_PublishedEpoch, g_PublishedGeneration, g_PublishWrites);
     return Plugin_Handled;
@@ -531,17 +531,17 @@ public Action Cmd_Status(int args)
 public Action Cmd_Dump(int args)
 {
     if (g_WaitForMap)
-    { PrintToServer("[ammo-repair] waiting for the next map initialization"); return Plugin_Handled; }
+    { PrintToServer("[ammodisplay-repair] waiting for the next map initialization"); return Plugin_Handled; }
     int bits; Address data;
     if (!CacheValid(bits, data))
-    { PrintToServer("[ammo-repair] no valid cache"); return Plugin_Handled; }
+    { PrintToServer("[ammodisplay-repair] no valid cache"); return Plugin_Handled; }
     char path[PLATFORM_MAX_PATH];
-    BuildPath(Path_SM, path, sizeof(path), "data/ammo_digits_sendtables.bin");
+    BuildPath(Path_SM, path, sizeof(path), "data/ammodisplay_sendtables.bin");
     File file = OpenFile(path, "wb");
-    if (file == null) { PrintToServer("[ammo-repair] dump open failed"); return Plugin_Handled; }
+    if (file == null) { PrintToServer("[ammodisplay-repair] dump open failed"); return Plugin_Handled; }
     for (int i = 0; i < (bits + 7) / 8; i++) file.WriteInt8(LoadFromAddress(data + view_as<Address>(i), NumberType_Int8));
     delete file;
-    PrintToServer("[ammo-repair] dumped %d bits", bits);
+    PrintToServer("[ammodisplay-repair] dumped %d bits", bits);
     return Plugin_Handled;
 }
 

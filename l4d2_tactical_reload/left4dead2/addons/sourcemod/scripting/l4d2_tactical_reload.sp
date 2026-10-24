@@ -15,6 +15,9 @@
 #define INCAP_MULTIPLY  1.25
 #define MODE_NATIVE     0
 #define MODE_CHAMBER    1
+// CS:GO式换弹（mode 2）参考了l4d2_weapon_csgo_reload 2.3：
+// Mode 2 (CS:GO-style reload) draws on l4d2_weapon_csgo_reload v2.3:
+// https://github.com/fbef0102/L4D1_2-Plugins/tree/master/l4d2_weapon_csgo_reload
 #define MODE_CSGO       2
 
 enum struct WeaponCfg
@@ -521,6 +524,9 @@ void ResetClient(int client)
 	g_pressTime[client] = 0.0; g_pressAttack[client] = false; g_attack[client] = false; g_reloadKey[client] = false;
 }
 
+// CS:GO式换弹（mode 2）参考了l4d2_weapon_csgo_reload 2.3：
+// Mode 2 (CS:GO-style reload) draws on l4d2_weapon_csgo_reload v2.3:
+// https://github.com/fbef0102/L4D1_2-Plugins/tree/master/l4d2_weapon_csgo_reload
 public void Event_WeaponReload(Event event, const char[] name, bool dontBroadcast)
 {
 	if (!g_enable || g_mode != MODE_CSGO) return;

@@ -1,5 +1,5 @@
 /*
- * l4d2_ammo_digits_ext
+ * l4d2_ammo_display_fix_ext
  * Copyright (C) 2026 ExpCharacter
  *
  * This program is free software: you can redistribute it and/or modify
@@ -40,7 +40,7 @@ bool g_WaitForMap;
 
 public Plugin myinfo =
 {
-	name = "L4D2 Ammo Digits (SendTable extension)",
+	name = "L4D2 Ammo Display Fix (SendTable extension)",
 	author = "ExpCharacter",
 	description = "Widen m_iAmmo to 16 bits through sendtable.ext",
 	version = PLUGIN_VERSION,
@@ -55,7 +55,7 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int maxleng
 
 public void OnPluginStart()
 {
-	RegServerCmd("sm_ammodigits_ext_status", Cmd_Status);
+	RegServerCmd("sm_ammodisplay_ext_status", Cmd_Status);
 
 	if (g_WaitForMap)
 	{
@@ -103,6 +103,6 @@ public Action Cmd_Status(int args)
 {
 	#pragma unused args
 	int bits = SendTable.GetBits(AMMO_CLASS, AMMO_TABLE);
-	PrintToServer("[ammo-ext] %s bits=%d expected=%d waiting_for_map=%d", AMMO_TABLE, bits, AMMO_BITS_TARGET, g_WaitForMap);
+	PrintToServer("[ammodisplay-ext] %s bits=%d expected=%d waiting_for_map=%d", AMMO_TABLE, bits, AMMO_BITS_TARGET, g_WaitForMap);
 	return Plugin_Handled;
 }

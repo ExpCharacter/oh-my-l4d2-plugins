@@ -17,6 +17,9 @@
  */
 // Written with ChatGPT 6.1 sol high + deepseek flash.
 // EMS movement HUD. Per-recipient overrides preserve original server HUD fields.
+// 复刻自 Sikarii 的 MovementHUD（MHUD，GOKZ/KZ 服务器常用移动 HUD）：
+// Recreated from Sikarii's MovementHUD (MHUD), the movement HUD commonly used on GOKZ/KZ servers:
+// https://github.com/Sikarii/movementhud
 #pragma semicolon 1
 #pragma newdecls required
 #include <sourcemod>

@@ -1,4 +1,6 @@
-# l4d2_ammo_digits_ext
+[English](README.md) | 简体中文
+
+# l4d2_ammo_display_fix_ext
 
 让客户端 HUD 正常显示超过 1023 的弹药数，最高支持 65535。
 
@@ -16,7 +18,7 @@
 | ---------------------------------------- | ------------------------------------- |
 | `sendtable.ext.dll` / `sendtable.ext.so` | `addons/sourcemod/extensions/`        |
 | `sendtable.inc`                          | `addons/sourcemod/scripting/include/` |
-| `l4d2_ammo_digits_ext.smx`               | `addons/sourcemod/plugins/`           |
+| `l4d2_ammo_display_fix_ext.smx`               | `addons/sourcemod/plugins/`           |
 
 ## 重要
 

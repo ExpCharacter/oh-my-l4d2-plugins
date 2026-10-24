@@ -1,3 +1,9 @@
+English | [简体中文](README.zh-cn.md)
+
 # l4d2_mhud
 
-复刻自 GOKZ 的 MHUD，用 EMS HUD 在各自玩家屏幕上显示对应按键与空速。
+A recreation of [Sikarii](https://github.com/Sikarii)'s [MovementHUD](https://github.com/Sikarii/movementhud) — uses the EMS HUD to show pressed keys and air speed on each player's own screen.
+
+## Credits
+
+Recreates the key-press and speed display of [MovementHUD](https://github.com/Sikarii/movementhud) (MHUD) by [Sikarii](https://github.com/Sikarii), the movement HUD commonly seen on GOKZ/KZ servers.
