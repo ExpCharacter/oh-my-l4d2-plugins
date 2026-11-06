@@ -1,0 +1,61 @@
+"Games"
+{
+	"left4dead2"
+	{
+
+		"Offsets"
+		{
+			"CGameMovement.Player"
+			{
+				"windows"	"4"
+				"linux"		"4"
+			}
+			"CGameMovement.MoveData"
+			{
+				"windows"	"8"
+				"linux"		"8"
+			}
+			"CGameMovement.ViewForward"
+			{
+				"windows"	"24"
+				"linux"		"24"
+			}
+			"CGameMovement.ViewRight"
+			{
+				"windows"	"36"
+				"linux"		"36"
+			}
+			"CMoveData.Buttons"
+			{
+				"windows"	"36"
+				"linux"		"36"
+			}
+			"CMoveData.Velocity"
+			{
+				"windows"	"64"
+				"linux"		"64"
+			}
+		}
+
+		"Functions"
+		{
+			"CGameMovement::LadderMove"
+			{
+				"signature"		"CGameMovement::LadderMove"
+				"callconv"		"thiscall"
+				"return"		"bool"
+				"this"			"address"
+			}
+		}
+
+		"Signatures"
+		{
+			"CGameMovement::LadderMove"
+			{
+				"library"		"server"
+				"windows"		"\x55\x8B\xEC\x81\xEC\xC0\x00\x00\x00\xA1\x2A\x2A\x2A\x2A\x33\xC5\x89\x45\xFC\x56\x8B\xF1\x8B\x46\x04"
+				"linux"			"\x55\x89\xE5\x53\x83\xEC\x14\x8B\x5D\x08\x8B\x43\x04\x80\xB8\x86\x01\x00\x00\x08\x74\x22\x8B\x03\x89\x1C\x24\xFF\x90\x10\x01\x00\x00\x84\xC0\x74\x13\x83\xC4\x14\x89\xD8\x5B\x5D\xE9\xDF\xEF\xFF\xFF"
+			}
+		}
+	}
+}

@@ -1,0 +1,68 @@
+"Games"
+{
+	"left4dead2"
+	{
+		"Functions"
+		{
+			"l4d2_team_airaccelerate::CGameMovement::AirAccelerate"
+			{
+				"signature"	"CGameMovement::AirAccelerate"
+				
+				"windows"
+				{
+					"callconv"	"stdcall"
+				}
+				
+				"linux"
+				{
+					"callconv"	"cdecl"
+				}
+				"return"	"void"
+				"this"		"ignore"
+
+				"arguments"
+				{
+					"pThis"
+					{
+						"type"	"objectptr"
+						"windows"
+						{
+							"register"	"ecx"
+						}
+					}
+					"wishdir"
+					{
+						"type"	"vectorptr"
+					}
+					"wishspeed"
+					{
+						"type"	"float"
+					}
+					"accel"
+					{
+						"type"	"float"
+					}
+				}
+			}
+		}
+
+		"Signatures"
+		{
+			"CGameMovement::AirAccelerate"
+			{
+				"library"	"server"
+				"windows"	"\x55\x8B\xEC\xF3\x0F\x10\x45\x0C\x56"
+				"linux"		"@_ZN13CGameMovement13AirAccelerateER6Vectorff"
+			}
+		}
+
+		"Offsets"
+		{
+			"CGameMovement::PlayerPointerOffset"
+			{
+				"windows"	"4"
+				"linux"		"4"
+			}
+		}
+	}
+}

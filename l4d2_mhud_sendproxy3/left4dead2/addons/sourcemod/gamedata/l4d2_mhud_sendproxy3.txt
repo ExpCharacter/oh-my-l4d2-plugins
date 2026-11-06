@@ -1,0 +1,21 @@
+"Games"
+{
+    "left4dead2"
+    {
+        "Offsets"
+        {
+            // ScriptedHUD int/float array element size; property bases use FindSendPropInfo.
+            "HUDScalarStride"
+            {
+                "windows" "4"
+                "linux"   "4"
+            }
+            // ScriptedHUD string slot storage, as used by the upstream HUD example.
+            "HUDStringStride"
+            {
+                "windows" "128"
+                "linux"   "128"
+            }
+        }
+    }
+}
